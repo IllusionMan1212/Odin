@@ -907,6 +907,9 @@ foreign lib {
 
 	// Window-related functions
 
+	debugNetInit :: proc(serverIp: cstring, port: c.int, level: c.int) -> c.int ---
+
+
 	InitWindow               :: proc(width, height: c.int, title: cstring) ---  // Initialize window and OpenGL context
 	WindowShouldClose        :: proc() -> bool  ---                             // Check if application should close (KEY_ESCAPE pressed or windows close icon clicked)
 	CloseWindow              :: proc() ---                                      // Close window and unload OpenGL context

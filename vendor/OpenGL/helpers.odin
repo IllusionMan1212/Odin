@@ -21,14 +21,14 @@ Shader_Type :: enum i32 {
 }
 
 
-@(private, thread_local)
+@(private)
 last_compile_error_message: []byte
-@(private, thread_local)
+@(private)
 last_link_error_message: []byte
 
-@(private, thread_local)
+@(private)
 last_compile_error_type: Shader_Type
-@(private, thread_local)
+@(private)
 last_link_error_type: Shader_Type
 
 get_last_error_messages :: proc() -> (compile_message: string, compile_type: Shader_Type, link_message: string, link_type: Shader_Type) {

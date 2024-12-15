@@ -240,6 +240,23 @@ when ODIN_OS == .NetBSD {
 	@(private) LFSETPOS :: "fsetpos"
 }
 
+when ODIN_OS == .PSVita {
+	// TODO:
+	fpos_t :: distinct i64
+
+	_IOFBF        :: 0
+	_IOLBF        :: 1
+	_IONBF        :: 2
+
+	FOPEN_MAX     :: 256
+
+	FILENAME_MAX  :: 256
+
+	SEEK_SET      :: 0
+	SEEK_CUR      :: 1
+	SEEK_END      :: 2
+}
+
 @(default_calling_convention="c")
 foreign libc {
 	// 7.21.4 Operations on files

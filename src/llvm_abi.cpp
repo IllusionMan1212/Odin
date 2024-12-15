@@ -1482,6 +1482,7 @@ namespace lbAbiWasm {
 
 namespace lbAbiArm32 {
 	gb_internal Array<lbArgType> compute_arg_types(LLVMContextRef c, LLVMTypeRef *arg_types, unsigned arg_count, ProcCallingConvention calling_convention);
+	gb_internal bool is_homogenous_aggregate(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_);
 	gb_internal lbArgType compute_return_type(LLVMContextRef c, LLVMTypeRef return_type, bool return_is_defined);
 
 	gb_internal LB_ABI_INFO(abi_info) {
@@ -1494,7 +1495,7 @@ namespace lbAbiArm32 {
 		return ft;
 	}
 
-	gb_internal bool is_register(LLVMTypeRef type, bool is_return) {
+	gb_internal bool is_register(LLVMTypeRef type) {
 		LLVMTypeKind kind = LLVMGetTypeKind(type);
 		switch (kind) {
 		case LLVMHalfTypeKind:
@@ -1513,7 +1514,7 @@ namespace lbAbiArm32 {
 		return false;
 	}
 
-	gb_internal lbArgType non_struct(LLVMContextRef c, LLVMTypeRef type, bool is_return) {
+	gb_internal lbArgType non_struct(LLVMContextRef c, LLVMTypeRef type) {
 		LLVMAttributeRef attr = nullptr;
 		LLVMTypeRef i1 = LLVMInt1TypeInContext(c);
 		if (type == i1) {
@@ -1522,22 +1523,121 @@ namespace lbAbiArm32 {
 		return lb_arg_type_direct(type, nullptr, nullptr, attr);
 	}
 
+	gb_internal bool is_homogenous_array(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_) {
+		GB_ASSERT(lb_is_type_kind(type, LLVMArrayTypeKind));
+		unsigned len = LLVMGetArrayLength(type);
+		if (len == 0) {
+			return false;
+		}
+		LLVMTypeRef elem = OdinLLVMGetArrayElementType(type);
+		LLVMTypeRef base_type = nullptr;
+		unsigned member_count = 0;
+		if (is_homogenous_aggregate(c, elem, &base_type, &member_count)) {
+			if (base_type_) *base_type_ = base_type;
+			if (member_count_) *member_count_ = member_count * len;
+			return true;
+
+		}
+		return false;
+	}
+	gb_internal bool is_homogenous_struct(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_) {
+		GB_ASSERT(lb_is_type_kind(type, LLVMStructTypeKind));
+		unsigned elem_count = LLVMCountStructElementTypes(type);
+		if (elem_count == 0) {
+			return false;
+		}
+		LLVMTypeRef base_type = nullptr;
+		unsigned member_count = 0;
+
+		for (unsigned i = 0; i < elem_count; i++) {
+			LLVMTypeRef field_type = nullptr;
+			unsigned field_member_count = 0;
+
+			LLVMTypeRef elem = LLVMStructGetTypeAtIndex(type, i);
+			if (!is_homogenous_aggregate(c, elem, &field_type, &field_member_count)) {
+				return false;
+			}
+
+			if (base_type == nullptr) {
+				base_type = field_type;
+				member_count = field_member_count;
+			} else {
+				if (base_type != field_type) {
+					return false;
+				}
+				member_count += field_member_count;
+			}
+		}
+
+		if (base_type == nullptr) {
+			return false;
+		}
+
+		if (lb_sizeof(type) == lb_sizeof(base_type) * member_count) {
+			if (base_type_) *base_type_ = base_type;
+			if (member_count_) *member_count_ = member_count;
+			return true;
+		}
+
+		return false;
+	}
+
+
+	gb_internal bool is_homogenous_aggregate(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_) {
+		LLVMTypeKind kind = LLVMGetTypeKind(type);
+		switch (kind) {
+		case LLVMFloatTypeKind:
+		case LLVMDoubleTypeKind:
+			if (base_type_) *base_type_ = type;
+			if (member_count_) *member_count_ = 1;
+			return true;
+		case LLVMArrayTypeKind:
+			return is_homogenous_array(c, type, base_type_, member_count_);
+		case LLVMStructTypeKind:
+			return is_homogenous_struct(c, type, base_type_, member_count_);
+		}
+		return false;
+	}
+
+	gb_internal unsigned is_homogenous_aggregate_small_enough(LLVMTypeRef base_type, unsigned member_count) {
+		return (member_count <= 4);
+	}
+
+
 	gb_internal Array<lbArgType> compute_arg_types(LLVMContextRef c, LLVMTypeRef *arg_types, unsigned arg_count, ProcCallingConvention calling_convention) {
 		auto args = array_make<lbArgType>(lb_function_type_args_allocator(), arg_count);
 
 		for (unsigned i = 0; i < arg_count; i++) {
 			LLVMTypeRef t = arg_types[i];
-			if (is_register(t, false)) {
-				args[i] = non_struct(c, t, false);
+
+			LLVMTypeRef homo_base_type = {};
+			unsigned homo_member_count = 0;
+
+			if (is_register(t)) {
+				args[i] = non_struct(c, t);
+			} else if (is_homogenous_aggregate(c, t, &homo_base_type, &homo_member_count)) {
+				if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
+					args[i] = lb_arg_type_direct(t, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
+				} else {
+					//args[i] = lb_arg_type_indirect(t, nullptr);
+					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), homo_member_count));
+					//args[i] = lb_arg_type_indirect(t, nullptr);
+					//args[i] = lb_arg_type_indirect_byval(c, t);
+				}
 			} else {
 				i64 sz = lb_sizeof(t);
 				i64 a = lb_alignof(t);
 				if (is_calling_convention_odin(calling_convention) && sz > 8) {
 					// Minor change to improve performance using the Odin calling conventions
 					args[i] = lb_arg_type_indirect(t, nullptr);
+				} else if (sz == 0) {
+					LLVMTypeRef cast_type = LLVMStructTypeInContext(c, nullptr, 0, false);
+					lb_arg_type_direct(t, cast_type, nullptr, nullptr);
 				} else if (a <= 4) {
 					unsigned n = cast(unsigned)((sz + 3) / 4);
 					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), n));
+					//LLVMTypeRef cast_type = LLVMIntTypeInContext(c, (sz*4));
+					//args[i] = lb_arg_type_direct(t);
 				} else {
 					unsigned n = cast(unsigned)((sz + 7) / 8);
 					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 64), n));
@@ -1548,18 +1648,35 @@ namespace lbAbiArm32 {
 	}
 
 	gb_internal lbArgType compute_return_type(LLVMContextRef c, LLVMTypeRef return_type, bool return_is_defined) {
+		LLVMTypeRef homo_base_type = nullptr;
+		unsigned homo_member_count = 0;
+
 		if (!return_is_defined) {
 			return lb_arg_type_direct(LLVMVoidTypeInContext(c));
-		} else if (!is_register(return_type, true)) {
+		} else if (is_homogenous_aggregate(c, return_type, &homo_base_type, &homo_member_count)) {
+			if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
+				return lb_arg_type_direct(return_type, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
+			} else {
+				//TODO(Platin): do i need to create stuff that can handle the diffrent return type?
+				//              else this needs a fix in llvm_backend_proc as we would need to cast it to the correct array type
+
+				//LB_ABI_MODIFY_RETURN_IF_TUPLE_MACRO();
+
+				//LLVMTypeRef array_type = llvm_array_type(homo_base_type, homo_member_count);
+				LLVMAttributeRef attr = lb_create_enum_attribute_with_type(c, "sret", return_type);
+				return lb_arg_type_indirect(return_type, attr);
+			}
+		} else if (!is_register(return_type)) {
 			switch (lb_sizeof(return_type)) {
 			case 1:         return lb_arg_type_direct(LLVMIntTypeInContext(c, 8),  return_type, nullptr, nullptr);
 			case 2:         return lb_arg_type_direct(LLVMIntTypeInContext(c, 16), return_type, nullptr, nullptr);
 			case 3: case 4: return lb_arg_type_direct(LLVMIntTypeInContext(c, 32), return_type, nullptr, nullptr);
 			}
+			// TODO(illusionman1212): Should this be removed now that homogenous aggregates are implemented?
 			LLVMAttributeRef attr = lb_create_enum_attribute_with_type(c, "sret", return_type);
 			return lb_arg_type_indirect(return_type, attr);
 		}
-		return non_struct(c, return_type, true);
+		return non_struct(c, return_type);
 	}
 };
 

@@ -6,6 +6,7 @@
 #+build !darwin
 #+build !js
 #+build !wasi
+#+build !vita
 package crypto
 
 HAS_RAND_BYTES :: false

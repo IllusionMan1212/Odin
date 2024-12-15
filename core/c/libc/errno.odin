@@ -107,6 +107,19 @@ when ODIN_OS == .JS {
 	}
 }
 
+when ODIN_OS == .PSVita {
+	@(private="file")
+	@(default_calling_convention="c")
+	foreign libc {
+		@(link_name="__errno")
+		_get_errno :: proc() -> ^int ---
+	}
+
+	EDOM   :: 33
+	EILSEQ :: 138
+	ERANGE :: 34
+}
+
 // Odin has no way to make an identifier "errno" behave as a function call to
 // read the value, or to produce an lvalue such that you can assign a different
 // error value to errno. To work around this, just expose it as a function like

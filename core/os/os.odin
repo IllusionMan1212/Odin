@@ -180,6 +180,8 @@ write_entire_file_or_err :: proc(name: string, data: []byte, truncate := true) -
 	when OS == .Linux || OS == .Darwin {
 		// NOTE(justasd): 644 (owner read, write; group read; others read)
 		mode = S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH
+	} else when OS == .PSVita {
+		mode = 0o777
 	}
 
 	fd := open(name, flags, mode) or_return

@@ -31,6 +31,7 @@ trap       :: proc() -> ! ---
 
 alloca             :: proc(size, align: int) -> [^]u8 ---
 cpu_relax          :: proc() ---
+// TODO: this is not supported on the vita
 read_cycle_counter :: proc() -> i64 ---
 
 count_ones           :: proc(x: $T) -> T where type_is_integer(T) || type_is_simd_vector(T) ---

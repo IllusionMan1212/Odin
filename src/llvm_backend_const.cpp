@@ -442,6 +442,9 @@ gb_internal LLVMValueRef lb_big_int_to_llvm(lbModule *m, Type *original_type, Bi
 	size_t nails = 0;
 	mp_endian endian = MP_LITTLE_ENDIAN;
 
+	// TODO: f64s apparently don't work on the vita ??? test this in a small program
+	// Update: This isn't a vita-exclusive thing, it's an arm32 issue. Follow this github ticket:
+	// https://github.com/odin-lang/Odin/issues/3856
 	max_count = mp_pack_count(a, nails, size);
 	if (sz < max_count) {
 		debug_print_big_int(a);

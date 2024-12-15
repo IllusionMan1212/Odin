@@ -58,13 +58,18 @@ default_random_generator_proc :: proc(data: rawptr, mode: Random_Generator_Mode,
 		return (xor_shifted >> rot) | (xor_shifted << ((-rot) & 63))
 	}
 
-	@(thread_local)
+	//@(thread_local)
 	global_rand_seed: Default_Random_State
 
 	init :: proc "contextless" (r: ^Default_Random_State, seed: u64) {
 		seed := seed
 		if seed == 0 {
-			seed = u64(intrinsics.read_cycle_counter())
+			// TODO: vita doesn't support the reac cycle counter intrinsic, so we temporarily set a big random number as the seed
+			when ODIN_OS == .PSVita {
+				seed = u64(53285391578931977)
+			} else {
+				seed = u64(intrinsics.read_cycle_counter())
+			}
 		}
 		r.state = 0
 		r.inc = (seed << 1) | 1

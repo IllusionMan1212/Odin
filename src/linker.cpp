@@ -59,6 +59,10 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 	String output_filename = path_to_string(heap_allocator(), build_context.build_paths[BuildPath_Output]);
 	debugf("Linking %.*s\n", LIT(output_filename));
 
+	// TODO: link the objects, create the Sony ELF, create the fself. param.sfo and vpk is not the concern of the linker
+	// NOTE: the creation of the sony elf and fself are also not the concern of the linker, so maybe just a linked elf
+	// is fine.
+
 	// TOOD(Jeroen): Make a `build_paths[BuildPath_Object] to avoid `%.*s.o`.
 
 	if (is_arch_wasm()) {
@@ -150,6 +154,18 @@ gb_internal i32 linker_stage(LinkerData *gen) {
 			is_android = true;
 			goto try_cross_linking;
 		default:
+			//#if defined(GB_SYSTEM_UNIX)
+			//	if (build_context.metrics.os == TargetOs_vita) {
+			//		debugf("flags: %.*s\n", LIT(build_context.link_flags));
+			//		debugf("filename: %.*s\n", LIT(output_filename));
+			//		debugf("extra flags: %.*s\n", LIT(build_context.extra_linker_flags));
+			//		result = system_exec_command_line_app("arm-vita-eabi-gcc",
+			//				"arm-vita-eabi-gcc",
+			//				LIT(output_filename), LIT(output_filename), LIT(build_context.link_flags), LIT(build_context.extra_linker_flags));
+			//		return result;
+			//	}
+			//#endif
+
 			gb_printf_err("Linking for cross compilation for this platform is not yet supported (%.*s %.*s)\n",
 				LIT(target_os_names[build_context.metrics.os]),
 				LIT(target_arch_names[build_context.metrics.arch])
