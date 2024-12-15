@@ -5,6 +5,7 @@
 #+build !netbsd
 #+build !darwin
 #+build !js
+#+build !vita
 package crypto
 
 HAS_RAND_BYTES :: false

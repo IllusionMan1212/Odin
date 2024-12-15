@@ -27,6 +27,7 @@ enum TargetOsKind : u16 {
 	TargetOs_orca,
 
 	TargetOs_freestanding,
+	TargetOs_vita,
 
 	TargetOs_COUNT,
 };
@@ -96,6 +97,7 @@ gb_global String target_os_names[TargetOs_COUNT] = {
 	str_lit("orca"),
 
 	str_lit("freestanding"),
+	str_lit("vita"),
 };
 
 gb_global String target_arch_names[TargetArch_COUNT] = {
@@ -756,6 +758,13 @@ gb_global TargetMetrics target_freestanding_riscv64 = {
 };
 
 
+gb_global TargetMetrics target_vita = {
+	TargetOs_vita,
+	TargetArch_arm32,
+	4, 4, 4, 8,
+	str_lit("armv7a-sony-vita-eabihf"),
+};
+
 struct NamedTargetMetrics {
 	String name;
 	TargetMetrics *metrics;
@@ -802,6 +811,8 @@ gb_global NamedTargetMetrics named_targets[] = {
 	{ str_lit("freestanding_arm32"), &target_freestanding_arm32 },
 
 	{ str_lit("freestanding_riscv64"), &target_freestanding_riscv64 },
+
+	{ str_lit("vita"), &target_vita },
 };
 
 gb_global NamedTargetMetrics *selected_target_metrics;
@@ -2127,6 +2138,7 @@ gb_internal bool init_build_paths(String init_filename) {
 		case TargetOs_openbsd:
 		case TargetOs_netbsd:
 		case TargetOs_haiku:
+		case TargetOs_vita:
 			gb_printf_err("-no-crt on unix systems requires either -default-to-nil-allocator or -default-to-panic-allocator to also be present because the default allocator requires crt\n");
 			return false;
 		}

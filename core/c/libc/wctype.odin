@@ -34,6 +34,9 @@ when ODIN_OS == .Windows {
 	wctrans_t :: distinct i32
 	wctype_t  :: distinct i32
 
+} else when ODIN_OS == .PSVita {
+	wctrans_t :: distinct int
+	wctype_t  :: distinct int
 }
 
 @(default_calling_convention="c")

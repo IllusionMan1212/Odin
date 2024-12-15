@@ -86,7 +86,7 @@ _recursive_mutex_try_lock :: proc "contextless" (m: ^Recursive_Mutex) -> bool {
 }
 
 
-when ODIN_OS != .Windows {
+when ODIN_OS != .Windows && ODIN_OS != .PSVita {
 	_Mutex :: struct {
 		mutex: Atomic_Mutex,
 	}

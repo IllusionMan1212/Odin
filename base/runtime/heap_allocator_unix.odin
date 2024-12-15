@@ -1,4 +1,4 @@
-#+build linux, darwin, freebsd, openbsd, netbsd, haiku
+#+build linux, darwin, freebsd, openbsd, netbsd, haiku, vita
 #+private
 package runtime
 

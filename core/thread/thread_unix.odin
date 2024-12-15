@@ -49,6 +49,8 @@ _create :: proc(procedure: Thread_Proc, priority: Thread_Priority) -> ^Thread {
 			assert_contextless(err == nil)
 		}
 
+		// @New: t.init_context here is always nil afaict because we call _create() first and THEN set
+		// the init_context in a start() call or something similar, check thread.odin
 		{
 			init_context := t.init_context
 
