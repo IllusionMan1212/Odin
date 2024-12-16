@@ -165,6 +165,7 @@ struct TargetMetrics {
 enum Subtarget : u32 {
 	Subtarget_Default,
 	Subtarget_iOS,
+	Subtarget_Android,
 
 	Subtarget_COUNT,
 };
@@ -172,6 +173,7 @@ enum Subtarget : u32 {
 gb_global String subtarget_strings[Subtarget_COUNT] = {
 	str_lit(""),
 	str_lit("ios"),
+	str_lit("android"),
 };
 
 
@@ -573,13 +575,13 @@ gb_global TargetMetrics target_linux_i386 = {
 gb_global TargetMetrics target_linux_amd64 = {
 	TargetOs_linux,
 	TargetArch_amd64,
-	8, 8, AMD64_MAX_ALIGNMENT, 32,
+	8, 8, AMD64_MAX_ALIGNMENT, 32, // TODO: max simd align might be 16 on android??
 	str_lit("x86_64-pc-linux-gnu"),
 };
 gb_global TargetMetrics target_linux_arm64 = {
 	TargetOs_linux,
 	TargetArch_arm64,
-	8, 8, 16, 32,
+	8, 8, 16, 32, // TODO: max simd align might be 16 on android??
 	str_lit("aarch64-linux-elf"),
 };
 gb_global TargetMetrics target_linux_arm32 = {
@@ -1639,6 +1641,27 @@ gb_internal void init_build_context(TargetMetrics *cross_target, Subtarget subta
 			break;
 		default:
 			GB_PANIC("Unknown architecture for darwin");
+		}
+	}
+
+	// https://developer.android.com/ndk/guides/other_build_systems
+	if (metrics->os == TargetOs_linux && subtarget == Subtarget_Android) {
+		switch (metrics->arch) {
+		case TargetArch_arm64:
+			bc->metrics.target_triplet = str_lit("aarch64-linux-android");
+			break;
+		case TargetArch_amd64:
+			bc->metrics.target_triplet = str_lit("x86_64-linux-android");
+			break;
+		case TargetArch_arm32:
+			bc->metrics.target_triplet = str_lit("armv7a-linux-androideabi");
+			break;
+		case TargetArch_i386:
+			// TODO: does android support i386??
+			bc->metrics.target_triplet = str_lit("i686-linux-android");
+			break;
+		default:
+			GB_PANIC("Unknown architecture for android");
 		}
 	}
 

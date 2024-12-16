@@ -1110,8 +1110,8 @@ gb_internal bool parse_build_flags(Array<String> args) {
 								String str = value.value_string;
 								bool found = false;
 
-								if (selected_target_metrics->metrics->os != TargetOs_darwin) {
-									gb_printf_err("-subtarget can only be used with darwin based targets at the moment\n");
+								if (selected_target_metrics->metrics->os != TargetOs_darwin && selected_target_metrics->metrics->os != TargetOs_linux) {
+									gb_printf_err("-subtarget can only be used with darwin and linux based targets at the moment\n");
 									bad_flags = true;
 									break;
 								}
@@ -1133,6 +1133,18 @@ gb_internal bool parse_build_flags(Array<String> args) {
 										gb_printf_err("\t%.*s\n", LIT(name));
 									}
 									bad_flags = true;
+								}
+
+								if (selected_target_metrics->metrics->os == TargetOs_darwin && selected_subtarget == Subtarget_Android) {
+									gb_printf_err("\"Android\" subtarget can only be used with linux based targets\n");
+									bad_flags = true;
+									break;
+								}
+
+								if (selected_target_metrics->metrics->os == TargetOs_linux && selected_subtarget == Subtarget_iOS) {
+									gb_printf_err("\"iOS\" subtarget can only be used with darwin based targets\n");
+									bad_flags = true;
+									break;
 								}
 							}
 							break;

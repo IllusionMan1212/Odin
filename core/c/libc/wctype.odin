@@ -15,8 +15,13 @@ when ODIN_OS == .Windows {
 	wctype_t  :: distinct ushort
 
 } else when ODIN_OS == .Linux || ODIN_OS == .JS {
-	wctrans_t :: distinct intptr_t
-	wctype_t  :: distinct ulong
+	when ODIN_PLATFORM_SUBTARGET == .Android {
+		wctrans_t :: distinct rawptr
+		wctype_t  :: distinct long
+	} else {
+		wctrans_t :: distinct intptr_t
+		wctype_t  :: distinct ulong
+	}
 
 } else when ODIN_OS == .Darwin {
 	wctrans_t :: distinct int

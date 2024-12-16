@@ -18,7 +18,7 @@ when ODIN_OS == .Linux {
 	@(private="file")
 	@(default_calling_convention="c")
 	foreign libc {
-		@(link_name="__errno_location")
+		@(link_name="__errno" when ODIN_PLATFORM_SUBTARGET == .Android else "__errno_location")
 		_get_errno :: proc() -> ^int ---
 	}
 

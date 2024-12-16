@@ -60,21 +60,28 @@ when ODIN_OS == .Windows {
 
 // GLIBC and MUSL compatible.
 when ODIN_OS == .Linux {
-	fpos_t        :: struct #raw_union { _: [16]char, _: longlong, _: double, }
+	when ODIN_PLATFORM_SUBTARGET == .Android {
+		// TODO(illusionman1212): This should be changed to i32 on 32bit android devices due to bionic defining it as such
+		// for 32bit android.
+		// See: https://android.googlesource.com/platform/bionic/+/main/docs/32-bit-abi.md
+		fpos_t :: distinct i64
+	} else {
+		fpos_t        :: struct #raw_union { _: [16]char, _: longlong, _: double, }
+	}
 
 	_IOFBF        :: 0
 	_IOLBF        :: 1
 	_IONBF        :: 2
 
-	BUFSIZ        :: 1024
+	BUFSIZ        :: 8192 when ODIN_PLATFORM_SUBTARGET == .Android else 1024
 
 	EOF           :: int(-1)
 
-	FOPEN_MAX     :: 1000
+	FOPEN_MAX     :: 20 when ODIN_PLATFORM_SUBTARGET == .Android else 1000
 
 	FILENAME_MAX  :: 4096
 
-	L_tmpnam      :: 20
+	L_tmpnam      :: 4096 when ODIN_PLATFORM_SUBTARGET == .Android else 20
 
 	SEEK_SET      :: 0
 	SEEK_CUR      :: 1

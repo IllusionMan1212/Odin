@@ -308,14 +308,14 @@ foreign lib {
 
 	[[ More; https://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_setcancelstate.html ]]
 	*/
-	pthread_setcancelstate :: proc(state: Cancel_State, oldstate: ^Cancel_State) -> Errno ---
+	when ODIN_PLATFORM_SUBTARGET != .Android {pthread_setcancelstate :: proc(state: Cancel_State, oldstate: ^Cancel_State) -> Errno ---}
 
 	/*
 	Atomically set the calling thread's cancel type and return the previous value.
 
 	[[ More; https://pubs.opengroup.org/onlinepubs/9699919799/functions/pthread_setcancelstate.html ]]
 	*/
-	pthread_setcanceltype :: proc(type: Cancel_Type, oldtype: ^Cancel_Type) -> Errno ---
+	when ODIN_PLATFORM_SUBTARGET != .Android {pthread_setcanceltype :: proc(type: Cancel_Type, oldtype: ^Cancel_Type) -> Errno ---}
 
 
 	/*
