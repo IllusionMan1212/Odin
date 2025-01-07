@@ -47,6 +47,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	img.which = .JPEG
 
 	for {
+		// TODO: assuming the markers are always correctly written as 2 consecutive bytes is wrong.
+		// 0xFFFFD8 is completely legal and allowed according to the spec so we should rewrite this to account for that.
+		// any amount of 0xFFs are allowed before the identifer of a marker.
 		marker := compress.read_data(ctx, image.JPEG_Marker) or_return
 		#partial switch marker {
 		case .SOI:
@@ -236,6 +239,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 		case .RST0..=.RST7:
 			// TODO: These are parameter-less markers. i.e. No length, No value. Just a marker.
 		case .SOF0: // Baseline DCT
+			assert(img.channels == 0, "Encountered more than one SOF0 marker")
+
 			fmt.println("GOT", marker)
 			length := (compress.read_data(ctx, u16be) or_return) - 2
 			precision := compress.read_u8(ctx) or_return
@@ -250,11 +255,40 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			fmt.println("Height:", height)
 			fmt.println("Width:", width)
 			fmt.println("components:", components)
+
+			if width == 0 || height == 0 {
+				panic("Invalid image dimensions")
+				//TODO: return error
+			}
+
+			if components != 1 && components != 3 {
+				panic("Unsupported number of channels")
+				// TODO: return error
+				// 4 components and 0 components should maybe return different errors
+				// 0 components is just invalid, but 4 components means CMYK and maybe we can support that.
+			}
+
 			for i in 0..<components {
 				// 1 = Y,
 				// 2 = Cb,
-				// 3 = Cr
+				// 3 = Cr,
+				// 4 = I,
+				// 5 = Q,
+				// YIQ is a different color space that JPEGs supposedly support, will have to double check the spec.
 				id := compress.read_u8(ctx) or_return
+
+				if id == 4 || id == 5 {
+					panic("YIQ color space detected")
+					// TODO: return error or something
+				}
+
+				// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
+				// decoders handle them just fine. I guess we'll add support for that too.
+				if id == 0 || id > 3 {
+					panic("Invalid component ID")
+					// TODO: return error
+				}
+
 				// high 4 is H, low 4 is V
 				// The H and V sampling factors dictate the final size of the component they are associated with.
 				// For instance, the color space defaults to YCbCr and the H and V sampling factors for each component,
@@ -306,12 +340,13 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				fmt.println("Component ID:", component_id)
 				fmt.println("DC AC Table:", dc_ac_table)
 			}
+			// TODO: These aren't used for baseline sequential DCT, only progressive.
 			Ss := compress.read_u8(ctx) or_return
 			Se := compress.read_u8(ctx) or_return
 			Ah_Al := compress.read_u8(ctx) or_return
-			fmt.println("Ss:", Ss)
-			fmt.println("Se:", Se)
-			fmt.println("Ah Al:", Ah_Al)
+			//fmt.println("Ss:", Ss)
+			//fmt.println("Se:", Se)
+			//fmt.println("Ah Al:", Ah_Al)
 
 			// TODO: after reading `length` of data, ECS (Entropy-Coded-Segment) comes which is just the compressed
 			// and encoded image data.
