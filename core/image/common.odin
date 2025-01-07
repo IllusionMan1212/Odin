@@ -64,6 +64,7 @@ Image_Metadata :: union #shared_nil {
 	^QOI_Info,
 	^TGA_Info,
 	^BMP_Info,
+	^JPEG_Info,
 }
 
 
@@ -573,6 +574,101 @@ TGA_Info :: struct {
 	image_id:  string,
 	footer:    Maybe(TGA_Footer),
 	extension: Maybe(TGA_Extension),
+}
+
+
+/*
+	JPEG-specific
+*/
+JFIF_Magic :: u32be(0x4A464946) // "JFIF"
+JFXX_Magic :: u32be(0x4A465858) // "JFXX"
+
+JFIF_Unit :: enum byte {
+	None = 0,
+	Dots_Per_Inch = 1,
+	Dots_Per_Centimeter = 2,
+}
+
+JFIF_APP0 :: struct {
+	ident: u32be,
+	version: u16be,
+	units: JFIF_Unit,
+	x_density: u16be,
+	y_density: u16be,
+	x_thumbnail: byte,
+	y_thumbnail: byte,
+	thumbnail: []RGB_Pixel `fmt:"-"`,
+}
+
+JFXX_APP0 :: struct {
+	extension_code: JFXX_Extension_Code,
+	x_thumbnail: byte,
+	y_thumbnail: byte,
+	thumbnail: []RGB_Pixel `fmt:"-"`,
+}
+
+JFXX_Extension_Code :: enum u8 {
+	Thumbnail_JPEG = 0x10,
+	Thumbnail_1_Byte_Palette = 0x11,
+	Thumbnail_3_Byte_RGB = 0x13,
+}
+
+JPEG_Marker :: enum u16be {
+	SOF0  = 0xFFC0,
+	SOF1  = 0xFFC1,
+	SOF2  = 0xFFC2,
+	SOF3  = 0xFFC3,
+	DHT   = 0xFFC4,
+	SOF5  = 0xFFC5,
+	SOF6  = 0xFFC6,
+	SOF7  = 0xFFC7,
+	JPG   = 0xFFC8,
+	SOF9  = 0xFFC9,
+	SOF10 = 0xFFCA,
+	SOF11 = 0xFFCB,
+	DAC   = 0xFFCC,
+	SOF13 = 0xFFCD,
+	SOF14 = 0xFFCE,
+	SOF15 = 0xFFCF,
+	RST0  = 0xFFD0,
+	RST1  = 0xFFD1,
+	RST2  = 0xFFD2,
+	RST3  = 0xFFD3,
+	RST4  = 0xFFD4,
+	RST5  = 0xFFD5,
+	RST6  = 0xFFD6,
+	RST7  = 0xFFD7,
+	SOI   = 0xFFD8,
+	EOI   = 0xFFD9,
+	SOS   = 0xFFDA,
+	DQT   = 0xFFDB,
+	DNL   = 0xFFDC,
+	DRI   = 0xFFDD,
+	DHP   = 0xFFDE,
+	EXP   = 0xFFDF,
+	APP0  = 0xFFE0,
+	APP1  = 0xFFE1,
+	APP2  = 0xFFE2,
+	APP3  = 0xFFE3,
+	APP4  = 0xFFE4,
+	APP5  = 0xFFE5,
+	APP6  = 0xFFE6,
+	APP7  = 0xFFE7,
+	APP8  = 0xFFE8,
+	APP9  = 0xFFE9,
+	APP10 = 0xFFEA,
+	APP11 = 0xFFEB,
+	APP12 = 0xFFEC,
+	APP13 = 0xFFED,
+	APP14 = 0xFFEE,
+	APP15 = 0xFFEF,
+	COM   = 0xFFFE,
+}
+
+JPEG_Info :: struct {
+	jfif_app0: Maybe(JFIF_APP0),
+	jfxx_app0: Maybe(JFXX_APP0),
+	//exif: Maybe(Exif),
 }
 
 // Function to help with image buffer calculations
