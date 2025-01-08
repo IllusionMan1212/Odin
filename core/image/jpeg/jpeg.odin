@@ -10,6 +10,26 @@ Image :: image.Image
 Error :: image.Error
 Options :: image.Options
 
+MAX_HUFFMAN_SYMBOLS :: 162
+
+Coefficient :: enum u8 {
+	DC,
+	AC,
+}
+
+Component :: enum u8 {
+	Y = 1,
+	Cb = 2,
+	Cr = 3,
+	I = 4,
+	Q = 5,
+}
+
+HuffmanTable :: struct {
+	symbols: [MAX_HUFFMAN_SYMBOLS]byte,
+	offsets: [17]byte,
+}
+
 // TODO: We could do something like png.odin where we return generic metadata about the
 // image and its pixel data but for more specific stuff (read: JFIF APP0, JFXX APP0, Application APP0) we provide
 // helper function that parse and read jpeg chunks (read: segments) and the user can extract that data themselves.
@@ -46,7 +66,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	img = new(Image)
 	img.which = .JPEG
 
-	for {
+	huffman: [Coefficient][4]HuffmanTable
+	// ACTable: [4]HuffmanTable
+	// DCTable: [4]HuffmanTable
+
+	loop: for {
 		// TODO: assuming the markers are always correctly written as 2 consecutive bytes is wrong.
 		// 0xFFFFD8 is completely legal and allowed according to the spec so we should rewrite this to account for that.
 		// any amount of 0xFFs are allowed before the identifer of a marker.
@@ -212,32 +236,36 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			length := (compress.read_data(ctx, u16be) or_return) - 2
 
 			for length > 0 {
-				// high 4 is type (0=DC, 1=AC)
-				// low 4 is table index
 				type_index := compress.read_u8(ctx) or_return
-				type := (type_index >> 4) & 0xF
+				type := cast(Coefficient)((type_index >> 4) & 0xF)
+				id := type_index & 0xF
 
-				bits := compress.read_slice(ctx, 16) or_return
-				table_len := 0
-				for bit in bits {
-					table_len += cast(int)bit
+				lengths := compress.read_slice(ctx, 16) or_return
+				num_symbols := 0
+				for length, i in lengths {
+					num_symbols += cast(int)length
+					huffman[type][id].offsets[i + 1] = cast(u8)num_symbols
 				}
 
-				huffman := compress.read_slice(ctx, table_len) or_return
+				symbols := compress.read_slice(ctx, num_symbols) or_return
+				copy(huffman[type][id].symbols[:], symbols)
 
-				length -= cast(u16be)(1 + 16 + table_len)
+				length -= cast(u16be)(1 + 16 + num_symbols)
 
-				fmt.println("Huffman Type|Index:", type_index)
-				fmt.println("Huffman Type:", type)
-				fmt.println("Huffman bits:", bits)
-				fmt.println("Huffman table len:", table_len)
-				fmt.println("Huffman table:", huffman)
+
+				// fmt.println("Huffman ID:", id)
+				// fmt.println("Huffman Type:", type)
+				// fmt.println("Huffman lengths:", lengths)
+				// fmt.println("Huffman symbols len:", num_symbols)
+				// fmt.println("Huffman symbols:", symbols)
+				// fmt.println("Huffman parsed table", huffman)
 			}
 		case .EOI:
 			fmt.println("Got EOI")
-			break
+			break loop
 		case .RST0..=.RST7:
 			// TODO: These are parameter-less markers. i.e. No length, No value. Just a marker.
+			unimplemented(fmt.tprint("%v marker", marker))
 		case .SOF0: // Baseline DCT
 			assert(img.channels == 0, "Encountered more than one SOF0 marker")
 
@@ -275,16 +303,16 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				// 4 = I,
 				// 5 = Q,
 				// YIQ is a different color space that JPEGs supposedly support, will have to double check the spec.
-				id := compress.read_u8(ctx) or_return
+				id := cast(Component)compress.read_u8(ctx) or_return
 
-				if id == 4 || id == 5 {
+				if id == .I || id == .Q {
 					panic("YIQ color space detected")
 					// TODO: return error or something
 				}
 
 				// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
 				// decoders handle them just fine. I guess we'll add support for that too.
-				if id == 0 || id > 3 {
+				if id == cast(Component)0 || id > .Cr {
 					panic("Invalid component ID")
 					// TODO: return error
 				}
@@ -334,11 +362,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			num_components := compress.read_u8(ctx) or_return
 			fmt.println("Components:", num_components)
 			for i in 0..<num_components {
-				component_id := compress.read_u8(ctx) or_return
+				component_id := cast(Component)compress.read_u8(ctx) or_return
 				// high 4 is DC, low 4 is AC
-				dc_ac_table := compress.read_u8(ctx) or_return
+				dc_ac_table_idx := compress.read_u8(ctx) or_return
 				fmt.println("Component ID:", component_id)
-				fmt.println("DC AC Table:", dc_ac_table)
+				fmt.println("DC AC Table ID:", dc_ac_table_idx)
 			}
 			// TODO: These aren't used for baseline sequential DCT, only progressive.
 			Ss := compress.read_u8(ctx) or_return
@@ -348,10 +376,20 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			//fmt.println("Se:", Se)
 			//fmt.println("Ah Al:", Ah_Al)
 
+			// TODO: Generate the huffman codes using the addition and shifting method.
+			// Go through the bitstream, bit by bit and decode it using huffman.
+			// Handle 0xFF00 by ignoring the 00, this is a bit harder because these 0x00 bytes are always byte-aligned
+			// meaning we can't just look at 8 bits from the bitstream and see if they're 0s
+			// we _could_ push to a dyn array but that's allocation and I think we can do it without allocation
+			// maybe some mix of looking at bytes and bits (read_u8 and read_bits_lsb)
+
 			// TODO: after reading `length` of data, ECS (Entropy-Coded-Segment) comes which is just the compressed
 			// and encoded image data.
 			// We skip the ECS data for now
 			for {
+				if (compress.peek_data(ctx, image.JPEG_Marker) or_return) == .EOI {
+					break
+				}
 				byte := compress.read_u8(ctx) or_return
 				if byte == 0xFF {
 					byte = compress.read_u8(ctx) or_return
@@ -365,10 +403,40 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				}
 			}
+		case .TEM:
+			// TEM doesn't have a length, continue to next marker
 		case:
 			length := (compress.read_data(ctx, u16be) or_return) - 2
 			fmt.printfln("Unhandled marker: %v. Skipping %v bytes", marker, length)
 			compress.read_slice_from_memory(ctx, cast(int)length) or_return
+		}
+	}
+
+	fmt.println("DC Tables")
+	for i in 0..<4 {
+		fmt.println("Table ID:", i)
+		fmt.println("Symbols:")
+		for j in 0..<16 {
+			fmt.printf("%v: ", j + 1)
+			for k := huffman[.DC][i].offsets[j]; k < huffman[.DC][i].offsets[j + 1]; k += 1 {
+				fmt.printf("%X", huffman[.DC][i].symbols[k])
+				fmt.print(" ")
+			}
+			fmt.print("\n")
+		}
+	}
+
+	fmt.println("AC Tables")
+	for i in 0..<4 {
+		fmt.println("Table ID:", i)
+		fmt.println("Symbols:")
+		for j in 0..<16 {
+			fmt.printf("%v: ", j + 1)
+			for k := huffman[.AC][i].offsets[j]; k < huffman[.AC][i].offsets[j + 1]; k += 1 {
+				fmt.printf("%X", huffman[.AC][i].symbols[k])
+				fmt.print(" ")
+			}
+			fmt.print("\n")
 		}
 	}
 

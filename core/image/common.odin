@@ -662,7 +662,22 @@ JPEG_Marker :: enum u16be {
 	APP13 = 0xFFED,
 	APP14 = 0xFFEE,
 	APP15 = 0xFFEF,
+	JPG0  = 0xFFF0,
+	JPG1  = 0xFFF1,
+	JPG2  = 0xFFF2,
+	JPG3  = 0xFFF3,
+	JPG4  = 0xFFF4,
+	JPG5  = 0xFFF5,
+	JPG6  = 0xFFF6,
+	JPG7  = 0xFFF7,
+	JPG8  = 0xFFF8,
+	JPG9  = 0xFFF9,
+	JPG10 = 0xFFFA,
+	JPG11 = 0xFFFB,
+	JPG12 = 0xFFFC,
+	JPG13 = 0xFFFD,
 	COM   = 0xFFFE,
+	TEM   = 0xFF01,
 }
 
 JPEG_Info :: struct {
