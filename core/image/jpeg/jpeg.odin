@@ -1,8 +1,9 @@
-package jfif
+package jpeg
 
 import "core:bytes"
 import "core:compress"
 import "core:fmt"
+import "core:os"
 import "core:image"
 import "core:slice"
 
@@ -27,7 +28,26 @@ Component :: enum u8 {
 
 HuffmanTable :: struct {
 	symbols: [MAX_HUFFMAN_SYMBOLS]byte,
+	codes: [MAX_HUFFMAN_SYMBOLS]u32,
 	offsets: [17]byte,
+}
+
+ColorComponent :: struct {
+	dc_table_id: u8,
+	ac_table_id: u8,
+}
+
+MCU :: [Component][64]i16
+
+zigzag := []byte{
+    0,   1,  8, 16,  9,  2,  3, 10,
+    17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34,
+    27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36,
+    29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46,
+    53, 60, 61, 54, 47, 55, 62, 63
 }
 
 // TODO: We could do something like png.odin where we return generic metadata about the
@@ -67,8 +87,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	img.which = .JPEG
 
 	huffman: [Coefficient][4]HuffmanTable
-	// ACTable: [4]HuffmanTable
-	// DCTable: [4]HuffmanTable
+	mcus: []MCU
 
 	loop: for {
 		// TODO: assuming the markers are always correctly written as 2 consecutive bytes is wrong.
@@ -252,13 +271,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 				length -= cast(u16be)(1 + 16 + num_symbols)
 
-
-				// fmt.println("Huffman ID:", id)
-				// fmt.println("Huffman Type:", type)
-				// fmt.println("Huffman lengths:", lengths)
-				// fmt.println("Huffman symbols len:", num_symbols)
-				// fmt.println("Huffman symbols:", symbols)
-				// fmt.println("Huffman parsed table", huffman)
+				code: u32 = 0
+				for i in 0..<16 {
+					for j := huffman[type][id].offsets[i]; j < huffman[type][id].offsets[i + 1]; j += 1 {
+						huffman[type][id].codes[j] = code
+						code += 1
+					}
+					code <<= 1
+				}
 			}
 		case .EOI:
 			fmt.println("Got EOI")
@@ -302,7 +322,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				// 3 = Cr,
 				// 4 = I,
 				// 5 = Q,
-				// YIQ is a different color space that JPEGs supposedly support, will have to double check the spec.
+				// TODO: YIQ is a different color space that JPEGs supposedly support, will have to double check the spec.
+				// I will likely not have IQ in the component enum and just treat them as errors.
+				// If someone can provide enough evidence that the JPEG compression format OR the JFIF file format
+				// is supposed to support this color space then we'll add support for it, but now for this is just noise.
 				id := cast(Component)compress.read_u8(ctx) or_return
 
 				if id == .I || id == .Q {
@@ -357,6 +380,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 		case .SOS:
 			// TODO: SOS cannot come before SOFn. This is a fatal decoding error and we should abort.
 
+			color_components: [Component]ColorComponent
+
 			fmt.println("GOT SOS")
 			length := (compress.read_data(ctx, u16be) or_return) - 2
 			num_components := compress.read_u8(ctx) or_return
@@ -364,9 +389,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			for i in 0..<num_components {
 				component_id := cast(Component)compress.read_u8(ctx) or_return
 				// high 4 is DC, low 4 is AC
-				dc_ac_table_idx := compress.read_u8(ctx) or_return
+				huffman_table_info := compress.read_u8(ctx) or_return
+				dc_table_id := huffman_table_info >> 4
+				ac_table_id := huffman_table_info & 0xF
+				color_components[component_id].dc_table_id = dc_table_id
+				color_components[component_id].ac_table_id = ac_table_id
+
 				fmt.println("Component ID:", component_id)
-				fmt.println("DC AC Table ID:", dc_ac_table_idx)
+				//fmt.println("DC AC Table ID:", dc_ac_table_idx)
 			}
 			// TODO: These aren't used for baseline sequential DCT, only progressive.
 			Ss := compress.read_u8(ctx) or_return
@@ -376,33 +406,155 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			//fmt.println("Se:", Se)
 			//fmt.println("Ah Al:", Ah_Al)
 
-			// TODO: Generate the huffman codes using the addition and shifting method.
-			// Go through the bitstream, bit by bit and decode it using huffman.
-			// Handle 0xFF00 by ignoring the 00, this is a bit harder because these 0x00 bytes are always byte-aligned
+			// TODO: Handle 0xFF00 by ignoring the 00, this is a bit harder because these 0x00 bytes are always byte-aligned
 			// meaning we can't just look at 8 bits from the bitstream and see if they're 0s
 			// we _could_ push to a dyn array but that's allocation and I think we can do it without allocation
 			// maybe some mix of looking at bytes and bits (read_u8 and read_bits_lsb)
 
-			// TODO: after reading `length` of data, ECS (Entropy-Coded-Segment) comes which is just the compressed
-			// and encoded image data.
-			// We skip the ECS data for now
-			for {
-				if (compress.peek_data(ctx, image.JPEG_Marker) or_return) == .EOI {
-					break
-				}
-				byte := compress.read_u8(ctx) or_return
-				if byte == 0xFF {
-					byte = compress.read_u8(ctx) or_return
-					switch byte {
-					// If any reset markers or data (0xFF00), continue skipping
-					case 0xD0..=0xD7, 0x00:
-						continue
-					// If any other marker, break and handle it.
-					case:
-						break
+			mcuWidth := (img.width + 7) / 8
+			mcuHeight := (img.height + 7) / 8
+			mcu_count := (mcuHeight * mcuWidth)
+			mcus = make([]MCU, mcu_count)
+
+			get_symbol :: proc(ctx: ^C, huffman_table: HuffmanTable) -> byte {
+				possible_code: u32 = 0
+
+				for {
+					for i in 0..<16 {
+						bit := compress.read_bits_msb_from_memory(ctx, 1)
+						possible_code = (possible_code << 1) | bit
+
+						for j := huffman_table.offsets[i]; j < huffman_table.offsets[i + 1]; j += 1 {
+							if possible_code == huffman_table.codes[j] {
+								return huffman_table.symbols[j]
+							}
+						}
 					}
 				}
 			}
+
+			previous_dc: [Component]i16
+
+			fmt.println("MCU count:", mcu_count)
+			fmt.println("channels:", img.channels)
+
+			for m in 0..<mcu_count {
+			component_loop: for c in 1..=img.channels {
+					mcu := &mcus[m][cast(Component)c]
+					dc_table := huffman[.DC][color_components[cast(Component)c].dc_table_id]
+					ac_table := huffman[.AC][color_components[cast(Component)c].ac_table_id]
+
+					length := get_symbol(ctx, dc_table)
+
+					if length > 11 {
+						fmt.println("DC coefficient length greater than 11")
+					}
+
+					dc_coeff := cast(i16)compress.read_bits_msb_from_memory(ctx, length)
+
+					if length != 0 && dc_coeff < (1 << (length - 1)) {
+						dc_coeff -= (1 << length) - 1
+					}
+					mcu[0] = dc_coeff + previous_dc[cast(Component)c]
+					previous_dc[cast(Component)c] = mcu[0]
+
+					// TODO: CONTINUE FROM HERE. We go out of bounds for later MCUs here
+					// because the scan data contains 0xFF00 and we don't skip over the
+					// stuffing byte so we end up reading incorrect bits.
+					//
+					// One thing we could do is copy the MSB bit reading procs from compress/common.odin
+					// to here and modify them to skip stuffing bytes and handle reset markers and EOI.
+					// This is probably the best solution we can do without having to do extra needless allocations.
+					for i := 1; i < 64; i += 1 {
+						// High nibble is amount of 0s to skip.
+						// Low nibble is length of coeff.
+						symbol := get_symbol(ctx, ac_table)
+
+						// Special symbol used to indicate
+						// that the rest of the MCU is filled with 0s
+						if symbol == 0x00 {
+							continue component_loop
+						}
+
+						amnt_zeros := symbol >> 4
+						ac_coeff_len := symbol & 0xF
+						ac_coeff: i16 = 0
+
+						// Special symbol used to indicate
+						// that the next 16 coeffs are 0s
+						//if symbol == 0xF0 {
+						//	amnt_zeros = 16
+						//}
+
+						if i + cast(int)amnt_zeros >= 64 {
+							fmt.println("Zero run-length exceeded MCU")
+						}
+
+						i += cast(int)amnt_zeros
+
+						if ac_coeff_len > 10 {
+							fmt.println("AC coefficient length greater than 10")
+						}
+
+						ac_coeff = cast(i16)compress.read_bits_msb_from_memory(ctx, ac_coeff_len)
+						if ac_coeff < (1 << (ac_coeff_len - 1)) {
+							ac_coeff -= (1 << ac_coeff_len) - 1
+						}
+
+						mcu[zigzag[i]] = ac_coeff
+					}
+				}
+			}
+
+			//fd := os.open("bruh.image", os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o777) or_else panic("Failed to open out file")
+
+			//for y in 0..<img.height {
+			//	mcuRow := y / 8
+			//	pixelRow := y % 8
+			//	for x in 0..<img.width {
+			//		mcuCol := x / 8
+			//		pixelCol := x % 8
+			//		mcuIndex := mcuRow * mcuWidth + mcuCol
+			//		pixelIndex := pixelRow * 8 + pixelCol
+
+			//		os.write_byte(fd, cast(u8)mcus[mcuIndex][.Y][pixelIndex])
+			//		os.write_byte(fd, cast(u8)mcus[mcuIndex][.Cb][pixelIndex])
+			//		os.write_byte(fd, cast(u8)mcus[mcuIndex][.Cr][pixelIndex])
+			//	}
+			//}
+
+			//os.close(fd)
+
+			break loop
+
+			//for {
+				//first_byte := compress.peek_data(ctx, u8) or_return
+				//second_byte := compress.peek_data(ctx, u8, 1) or_return
+				//if first_byte == 0xFF {
+				//	if second_byte == 0xD9 { // EOI
+				//		fmt.println("Found EOI. breaking")
+				//		break
+				//	} else if second_byte == 0x00 { // Stuffed byte
+				//		// TODO: Ignore these 0s
+				//	} else if second_byte >= 0xD0 && second_byte <= 0xD7 { // RSTn markers
+				//		// TODO: handle reset markers
+				//	}
+				//}
+
+				//fmt.println(compress.read_bits_msb_from_memory(ctx, 4))
+				//byte := compress.read_u8(ctx) or_return
+				//if byte == 0xFF {
+				//	byte = compress.read_u8(ctx) or_return
+				//	switch byte {
+				//	// If any reset markers or data (0xFF00), continue skipping
+				//	case 0xD0..=0xD7, 0x00:
+				//		continue
+				//	// If any other marker, break and handle it.
+				//	case:
+				//		break
+				//	}
+				//}
+			//}
 		case .TEM:
 			// TEM doesn't have a length, continue to next marker
 		case:
@@ -412,33 +564,58 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 		}
 	}
 
-	fmt.println("DC Tables")
-	for i in 0..<4 {
-		fmt.println("Table ID:", i)
-		fmt.println("Symbols:")
-		for j in 0..<16 {
-			fmt.printf("%v: ", j + 1)
-			for k := huffman[.DC][i].offsets[j]; k < huffman[.DC][i].offsets[j + 1]; k += 1 {
-				fmt.printf("%X", huffman[.DC][i].symbols[k])
-				fmt.print(" ")
-			}
-			fmt.print("\n")
-		}
-	}
+	// Huffman tables are completely correct, both symbols and codes.
+	//fmt.println("DC Tables")
+	//for i in 0..<4 {
+	//	fmt.println("Table ID:", i)
+	//	fmt.println("Symbols:")
+	//	for j in 0..<16 {
+	//		fmt.printf("%v: ", j + 1)
+	//		for k := huffman[.DC][i].offsets[j]; k < huffman[.DC][i].offsets[j + 1]; k += 1 {
+	//			fmt.printf("%X", huffman[.DC][i].symbols[k])
+	//			fmt.print(" ")
+	//		}
+	//		fmt.print("\n")
+	//	}
 
-	fmt.println("AC Tables")
-	for i in 0..<4 {
-		fmt.println("Table ID:", i)
-		fmt.println("Symbols:")
-		for j in 0..<16 {
-			fmt.printf("%v: ", j + 1)
-			for k := huffman[.AC][i].offsets[j]; k < huffman[.AC][i].offsets[j + 1]; k += 1 {
-				fmt.printf("%X", huffman[.AC][i].symbols[k])
-				fmt.print(" ")
-			}
-			fmt.print("\n")
-		}
-	}
+	//	fmt.println("Codes:")
+	//	for j in 0..<16 {
+	//		fmt.printf("%v: ", j + 1)
+	//		for k := huffman[.DC][i].offsets[j]; k < huffman[.DC][i].offsets[j + 1]; k += 1 {
+	//			fmt.printf("%v", huffman[.DC][i].codes[k])
+	//			fmt.print(" ")
+	//		}
+	//		fmt.print("\n")
+	//	}
+	//}
+
+	//fmt.println("AC Tables")
+	//for i in 0..<4 {
+	//	fmt.println("Table ID:", i)
+	//	fmt.println("Symbols:")
+	//	for j in 0..<16 {
+	//		fmt.printf("%v: ", j + 1)
+	//		for k := huffman[.AC][i].offsets[j]; k < huffman[.AC][i].offsets[j + 1]; k += 1 {
+	//			fmt.printf("%X", huffman[.AC][i].symbols[k])
+	//			fmt.print(" ")
+	//		}
+	//		fmt.print("\n")
+	//	}
+
+	//	fmt.println("Codes:")
+	//	for j in 0..<16 {
+	//		fmt.printf("%v: ", j + 1)
+	//		for k := huffman[.AC][i].offsets[j]; k < huffman[.AC][i].offsets[j + 1]; k += 1 {
+	//			fmt.printf("%v", huffman[.AC][i].codes[k])
+	//			fmt.print(" ")
+	//		}
+	//		fmt.print("\n")
+	//	}
+	//}
+
+	// We've confirmed that at least the first MCU is decoded correctly
+	// so the other MCUs _should_ be ok, we just gotta fix the massive stuffing byte bug.
+	//fmt.println(mcus)
 
 	// TODO:
 	return

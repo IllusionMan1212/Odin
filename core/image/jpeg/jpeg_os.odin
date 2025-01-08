@@ -1,4 +1,4 @@
-package jfif
+package jpeg
 
 import "core:os"
 

@@ -358,6 +358,33 @@ peek_back_byte :: #force_inline proc(z: ^$C, offset: i64) -> (res: u8, err: io.E
 	return z.output.buf[z.bytes_written - offset], .None
 }
 
+@(optimization_mode="favor_size")
+refill_msb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width := i8(48)) {
+	refill := u64(width)
+	b      := u64(0)
+
+	if z.num_bits > refill {
+		return
+	}
+
+	for {
+		if len(z.input_data) != 0 {
+			b = u64(z.input_data[0])
+			z.input_data = z.input_data[1:]
+		} else {
+			b = 0
+		}
+
+		z.code_buffer |= ((b << 56) >> u8(z.num_bits))
+		z.num_bits += 8
+		if z.num_bits > refill {
+			break
+		}
+	}
+}
+
+refill_msb :: proc{refill_msb_from_memory}
+
 // Generalized bit reader LSB
 @(optimization_mode="favor_size")
 refill_lsb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width := i8(48)) {
@@ -415,6 +442,14 @@ refill_lsb :: proc{refill_lsb_from_memory, refill_lsb_from_stream}
 
 
 @(optimization_mode="favor_size")
+consume_bits_msb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width: u8) {
+	z.code_buffer <<= width
+	z.num_bits -= u64(width)
+}
+
+consume_bits_msb :: proc{consume_bits_msb_from_memory}
+
+@(optimization_mode="favor_size")
 consume_bits_lsb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width: u8) {
 	z.code_buffer >>= width
 	z.num_bits -= u64(width)
@@ -427,6 +462,16 @@ consume_bits_lsb_from_stream :: #force_inline proc(z: ^Context_Stream_Input, wid
 }
 
 consume_bits_lsb :: proc{consume_bits_lsb_from_memory, consume_bits_lsb_from_stream}
+
+@(optimization_mode="favor_size")
+peek_bits_msb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width: u8) -> u32 {
+	if z.num_bits < u64(width) {
+		refill_msb(z)
+	}
+	return u32((z.code_buffer &~ (max(u64) >> width)) >> (64 - width))
+}
+
+peek_bits_msb :: proc{peek_bits_msb_from_memory}
 
 @(optimization_mode="favor_size")
 peek_bits_lsb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width: u8) -> u32 {
@@ -459,6 +504,13 @@ peek_bits_no_refill_lsb_from_stream :: #force_inline proc(z: ^Context_Stream_Inp
 }
 
 peek_bits_no_refill_lsb :: proc{peek_bits_no_refill_lsb_from_memory, peek_bits_no_refill_lsb_from_stream}
+
+@(optimization_mode="favor_size")
+read_bits_msb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width: u8) -> u32 {
+	k := #force_inline peek_bits_msb(z, width)
+	#force_inline consume_bits_msb(z, width)
+	return k
+}
 
 @(optimization_mode="favor_size")
 read_bits_lsb_from_memory :: #force_inline proc(z: ^Context_Memory_Input, width: u8) -> u32 {
