@@ -184,9 +184,19 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				fmt.eprintln("Duplicate SOI found")
 			case .APP0:
 				length := cast(int)((compress.read_data(ctx, u16be) or_return) - 2)
+				ident := make([dynamic]byte, 0, 12)
 				// TODO: Assuming the identifier is 4 bytes long with a 5th NUL byte is wrong.
 				// The NUL byte is there to terminate a string of arbitrary length, so we should read until we encounter
 				// the NUL byte.
+				for {
+					b := compress.read_u8(ctx) or_return
+					if b == 0x00 {
+						break
+					}
+					append(&ident, b)
+				}
+
+				slice.equal(ident[:], {0x00, ??})
 				ident := compress.read_data(ctx, u32be) or_return
 				// skip NUL byte
 				compress.read_u8(ctx) or_return
@@ -247,6 +257,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						x_thumbnail := compress.read_u8(ctx) or_return
 						y_thumbnail := compress.read_u8(ctx) or_return
 						pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice(ctx, cast(int)x_thumbnail * cast(int)y_thumbnail * 3) or_return)
+						// TODO: leak if we don't .return_metadata
 						thumbnail := make([]image.RGB_Pixel, cast(int)x_thumbnail * cast(int)y_thumbnail)
 						copy(thumbnail, pixels)
 
@@ -271,6 +282,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						//y_thumbnail := compress.read_u8(ctx) or_return
 						//palette := slice.reinterpret([]image.RGB_Pixel, compress.read_slice(ctx, 768) or_return)
 						//old_pixels := compress.read_slice(ctx, cast(int)x_thumbnail * cast(int)y_thumbnail) or_return
+						// TODO: leak if we don't .return_metadata
 						//pixels := make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
 
 						//for i in 0..<x_thumbnail*y_thumbnail {
