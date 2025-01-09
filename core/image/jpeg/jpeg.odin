@@ -50,6 +50,69 @@ zigzag := []byte{
     53, 60, 61, 54, 47, 55, 62, 63
 }
 
+@(optimization_mode="favor_size")
+refill_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width := i8(48)) {
+	refill := u64(width)
+	b      := u64(0)
+
+	if z.num_bits > refill {
+		return
+	}
+
+	for {
+		if len(z.input_data) != 0 {
+			b = u64(z.input_data[0])
+
+			if len(z.input_data) > 1 {
+				next := u64(z.input_data[1])
+
+				if b == 0xFF && next == 0x00 {
+					z.input_data = z.input_data[2:]
+				} else {
+					z.input_data = z.input_data[1:]
+				}
+			} else {
+				z.input_data = z.input_data[1:]
+			}
+		} else {
+			b = 0
+		}
+
+		z.code_buffer |= ((b << 56) >> u8(z.num_bits))
+		z.num_bits += 8
+		if z.num_bits > refill {
+			break
+		}
+	}
+}
+
+refill_msb :: proc{refill_msb_from_memory}
+
+@(optimization_mode="favor_size")
+consume_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) {
+	z.code_buffer <<= width
+	z.num_bits -= u64(width)
+}
+
+consume_bits_msb :: proc{consume_bits_msb_from_memory}
+
+@(optimization_mode="favor_size")
+peek_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) -> u32 {
+	if z.num_bits < u64(width) {
+		refill_msb(z)
+	}
+	return u32((z.code_buffer &~ (max(u64) >> width)) >> (64 - width))
+}
+
+peek_bits_msb :: proc{peek_bits_msb_from_memory}
+
+@(optimization_mode="favor_size")
+read_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) -> u32 {
+	k := #force_inline peek_bits_msb(z, width)
+	#force_inline consume_bits_msb(z, width)
+	return k
+}
+
 // TODO: We could do something like png.odin where we return generic metadata about the
 // image and its pixel data but for more specific stuff (read: JFIF APP0, JFXX APP0, Application APP0) we provide
 // helper function that parse and read jpeg chunks (read: segments) and the user can extract that data themselves.
@@ -118,6 +181,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 				if x_thumbnail * y_thumbnail != 0 {
 					thumb_pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice_from_memory(ctx, x_thumbnail * y_thumbnail * 3) or_return)
+					// TODO: this leaks if we don't have .return_metadata on
 					thumbnail = make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
 					copy(thumbnail, thumb_pixels)
 				}
@@ -421,7 +485,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 				for {
 					for i in 0..<16 {
-						bit := compress.read_bits_msb_from_memory(ctx, 1)
+						bit := read_bits_msb_from_memory(ctx, 1)
 						possible_code = (possible_code << 1) | bit
 
 						for j := huffman_table.offsets[i]; j < huffman_table.offsets[i + 1]; j += 1 {
@@ -450,7 +514,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						fmt.println("DC coefficient length greater than 11")
 					}
 
-					dc_coeff := cast(i16)compress.read_bits_msb_from_memory(ctx, length)
+					dc_coeff := cast(i16)read_bits_msb_from_memory(ctx, length)
 
 					if length != 0 && dc_coeff < (1 << (length - 1)) {
 						dc_coeff -= (1 << length) - 1
@@ -496,7 +560,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 							fmt.println("AC coefficient length greater than 10")
 						}
 
-						ac_coeff = cast(i16)compress.read_bits_msb_from_memory(ctx, ac_coeff_len)
+						ac_coeff = cast(i16)read_bits_msb_from_memory(ctx, ac_coeff_len)
 						if ac_coeff < (1 << (ac_coeff_len - 1)) {
 							ac_coeff -= (1 << ac_coeff_len) - 1
 						}
@@ -541,7 +605,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				//	}
 				//}
 
-				//fmt.println(compress.read_bits_msb_from_memory(ctx, 4))
+				//fmt.println(read_bits_msb_from_memory(ctx, 4))
 				//byte := compress.read_u8(ctx) or_return
 				//if byte == 0xFF {
 				//	byte = compress.read_u8(ctx) or_return
