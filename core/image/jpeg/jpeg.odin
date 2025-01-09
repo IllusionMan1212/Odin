@@ -128,6 +128,23 @@ load_from_bytes :: proc(data: []byte, options := Options{}, allocator := context
 	return img, err
 }
 
+get_symbol :: proc(ctx: ^$C, huffman_table: HuffmanTable) -> byte {
+	possible_code: u32 = 0
+
+	for i in 0..<16 {
+		bit := read_bits_msb_from_memory(ctx, 1)
+		possible_code = (possible_code << 1) | bit
+
+		for j := huffman_table.offsets[i]; j < huffman_table.offsets[i + 1]; j += 1 {
+			if possible_code == huffman_table.codes[j] {
+				return huffman_table.symbols[j]
+			}
+		}
+	}
+
+	return 0
+}
+
 load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.allocator) -> (img: ^Image, err: Error) {
 	context.allocator = allocator
 	options := options
@@ -353,7 +370,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 		case .SOF0: // Baseline DCT
 			assert(img.channels == 0, "Encountered more than one SOF0 marker")
 
-			fmt.println("GOT", marker)
 			length := (compress.read_data(ctx, u16be) or_return) - 2
 			precision := compress.read_u8(ctx) or_return
 			height := compress.read_data(ctx, u16be) or_return
@@ -363,10 +379,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			img.height = cast(int)height
 			img.depth = cast(int)precision
 			img.channels = cast(int)components
-			fmt.println("Precision:", precision)
-			fmt.println("Height:", height)
-			fmt.println("Width:", width)
-			fmt.println("components:", components)
 
 			if width == 0 || height == 0 {
 				panic("Invalid image dimensions")
@@ -446,10 +458,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 			color_components: [Component]ColorComponent
 
-			fmt.println("GOT SOS")
 			length := (compress.read_data(ctx, u16be) or_return) - 2
 			num_components := compress.read_u8(ctx) or_return
-			fmt.println("Components:", num_components)
 			for i in 0..<num_components {
 				component_id := cast(Component)compress.read_u8(ctx) or_return
 				// high 4 is DC, low 4 is AC
@@ -458,9 +468,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				ac_table_id := huffman_table_info & 0xF
 				color_components[component_id].dc_table_id = dc_table_id
 				color_components[component_id].ac_table_id = ac_table_id
-
-				fmt.println("Component ID:", component_id)
-				//fmt.println("DC AC Table ID:", dc_ac_table_idx)
 			}
 			// TODO: These aren't used for baseline sequential DCT, only progressive.
 			Ss := compress.read_u8(ctx) or_return
@@ -480,27 +487,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			mcu_count := (mcuHeight * mcuWidth)
 			mcus = make([]MCU, mcu_count)
 
-			get_symbol :: proc(ctx: ^C, huffman_table: HuffmanTable) -> byte {
-				possible_code: u32 = 0
-
-				for {
-					for i in 0..<16 {
-						bit := read_bits_msb_from_memory(ctx, 1)
-						possible_code = (possible_code << 1) | bit
-
-						for j := huffman_table.offsets[i]; j < huffman_table.offsets[i + 1]; j += 1 {
-							if possible_code == huffman_table.codes[j] {
-								return huffman_table.symbols[j]
-							}
-						}
-					}
-				}
-			}
-
 			previous_dc: [Component]i16
 
 			fmt.println("MCU count:", mcu_count)
-			fmt.println("channels:", img.channels)
 
 			for m in 0..<mcu_count {
 			component_loop: for c in 1..=img.channels {
@@ -590,35 +579,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			//os.close(fd)
 
 			break loop
-
-			//for {
-				//first_byte := compress.peek_data(ctx, u8) or_return
-				//second_byte := compress.peek_data(ctx, u8, 1) or_return
-				//if first_byte == 0xFF {
-				//	if second_byte == 0xD9 { // EOI
-				//		fmt.println("Found EOI. breaking")
-				//		break
-				//	} else if second_byte == 0x00 { // Stuffed byte
-				//		// TODO: Ignore these 0s
-				//	} else if second_byte >= 0xD0 && second_byte <= 0xD7 { // RSTn markers
-				//		// TODO: handle reset markers
-				//	}
-				//}
-
-				//fmt.println(read_bits_msb_from_memory(ctx, 4))
-				//byte := compress.read_u8(ctx) or_return
-				//if byte == 0xFF {
-				//	byte = compress.read_u8(ctx) or_return
-				//	switch byte {
-				//	// If any reset markers or data (0xFF00), continue skipping
-				//	case 0xD0..=0xD7, 0x00:
-				//		continue
-				//	// If any other marker, break and handle it.
-				//	case:
-				//		break
-				//	}
-				//}
-			//}
 		case .TEM:
 			// TEM doesn't have a length, continue to next marker
 		case:
@@ -628,60 +588,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 		}
 	}
 
-	// Huffman tables are completely correct, both symbols and codes.
-	//fmt.println("DC Tables")
-	//for i in 0..<4 {
-	//	fmt.println("Table ID:", i)
-	//	fmt.println("Symbols:")
-	//	for j in 0..<16 {
-	//		fmt.printf("%v: ", j + 1)
-	//		for k := huffman[.DC][i].offsets[j]; k < huffman[.DC][i].offsets[j + 1]; k += 1 {
-	//			fmt.printf("%X", huffman[.DC][i].symbols[k])
-	//			fmt.print(" ")
-	//		}
-	//		fmt.print("\n")
-	//	}
-
-	//	fmt.println("Codes:")
-	//	for j in 0..<16 {
-	//		fmt.printf("%v: ", j + 1)
-	//		for k := huffman[.DC][i].offsets[j]; k < huffman[.DC][i].offsets[j + 1]; k += 1 {
-	//			fmt.printf("%v", huffman[.DC][i].codes[k])
-	//			fmt.print(" ")
-	//		}
-	//		fmt.print("\n")
-	//	}
-	//}
-
-	//fmt.println("AC Tables")
-	//for i in 0..<4 {
-	//	fmt.println("Table ID:", i)
-	//	fmt.println("Symbols:")
-	//	for j in 0..<16 {
-	//		fmt.printf("%v: ", j + 1)
-	//		for k := huffman[.AC][i].offsets[j]; k < huffman[.AC][i].offsets[j + 1]; k += 1 {
-	//			fmt.printf("%X", huffman[.AC][i].symbols[k])
-	//			fmt.print(" ")
-	//		}
-	//		fmt.print("\n")
-	//	}
-
-	//	fmt.println("Codes:")
-	//	for j in 0..<16 {
-	//		fmt.printf("%v: ", j + 1)
-	//		for k := huffman[.AC][i].offsets[j]; k < huffman[.AC][i].offsets[j + 1]; k += 1 {
-	//			fmt.printf("%v", huffman[.AC][i].codes[k])
-	//			fmt.print(" ")
-	//		}
-	//		fmt.print("\n")
-	//	}
-	//}
-
-	// We've confirmed that at least the first MCU is decoded correctly
-	// so the other MCUs _should_ be ok, we just gotta fix the massive stuffing byte bug.
-	//fmt.println(mcus)
-
-	// TODO:
 	return
 }
 
