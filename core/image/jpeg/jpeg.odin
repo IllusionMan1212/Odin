@@ -11,7 +11,8 @@ Image :: image.Image
 Error :: image.Error
 Options :: image.Options
 
-MAX_HUFFMAN_SYMBOLS :: 162
+HUFFMAN_MAX_SYMBOLS :: 162
+HUFFMAN_MAX_BITS  :: 16
 
 Coefficient :: enum u8 {
 	DC,
@@ -27,19 +28,22 @@ Component :: enum u8 {
 }
 
 HuffmanTable :: struct {
-	symbols: [MAX_HUFFMAN_SYMBOLS]byte,
-	codes: [MAX_HUFFMAN_SYMBOLS]u32,
-	offsets: [17]byte,
+	symbols: [HUFFMAN_MAX_SYMBOLS]byte,
+	codes: [HUFFMAN_MAX_SYMBOLS]u32,
+	offsets: [HUFFMAN_MAX_BITS + 1]byte,
 }
+
+QuantizationTable :: []u16be
 
 ColorComponent :: struct {
 	dc_table_id: u8,
 	ac_table_id: u8,
+	quantization_table_id: u8,
 }
 
 MCU :: [Component][64]i16
 
-zigzag := []byte{
+zigzag := [?]byte{
     0,   1,  8, 16,  9,  2,  3, 10,
     17, 24, 32, 25, 18, 11,  4,  5,
     12, 19, 26, 33, 40, 48, 41, 34,
@@ -47,7 +51,7 @@ zigzag := []byte{
     35, 42, 49, 56, 57, 50, 43, 36,
     29, 22, 15, 23, 30, 37, 44, 51,
     58, 59, 52, 45, 38, 31, 39, 46,
-    53, 60, 61, 54, 47, 55, 62, 63
+    53, 60, 61, 54, 47, 55, 62, 63,
 }
 
 @(optimization_mode="favor_size")
@@ -131,7 +135,7 @@ load_from_bytes :: proc(data: []byte, options := Options{}, allocator := context
 get_symbol :: proc(ctx: ^$C, huffman_table: HuffmanTable) -> byte {
 	possible_code: u32 = 0
 
-	for i in 0..<16 {
+	for i in 0..<HUFFMAN_MAX_BITS {
 		bit := read_bits_msb_from_memory(ctx, 1)
 		possible_code = (possible_code << 1) | bit
 
@@ -169,6 +173,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	img.which = .JPEG
 
 	huffman: [Coefficient][4]HuffmanTable
+	quantization: [4]QuantizationTable
+	defer for i in 0..<4 {
+		delete(quantization[i])
+	}
+	color_components: [Component]ColorComponent
 	mcus: []MCU
 
 	loop: for {
@@ -184,22 +193,13 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				fmt.eprintln("Duplicate SOI found")
 			case .APP0:
 				length := cast(int)((compress.read_data(ctx, u16be) or_return) - 2)
-				ident := make([dynamic]byte, 0, 12)
 				// TODO: Assuming the identifier is 4 bytes long with a 5th NUL byte is wrong.
 				// The NUL byte is there to terminate a string of arbitrary length, so we should read until we encounter
 				// the NUL byte.
-				for {
-					b := compress.read_u8(ctx) or_return
-					if b == 0x00 {
-						break
-					}
-					append(&ident, b)
-				}
-
-				slice.equal(ident[:], {0x00, ??})
 				ident := compress.read_data(ctx, u32be) or_return
 				// skip NUL byte
-				compress.read_u8(ctx) or_return
+				NUL := compress.read_u8(ctx) or_return
+				assert(NUL == 0x00, "APP0 identifier NUL byte is not NUL. Identifier might not be 4 bytes long")
 				switch ident {
 				case image.JFIF_Magic:
 					version := compress.read_data(ctx, u16be) or_return
@@ -327,23 +327,22 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					precision := precision_and_index >> 4
 					index := precision_and_index & 0xF
 
+					quantization[index] = make(QuantizationTable, 64)
+
 					// When precision is 0, we read 64 u8s.
 					// when it's 1, we read 64 u16s.
 					table_bytes := 64
 					if precision == 1 {
 						table_bytes = 128
-					}
-
-					table := compress.read_slice(ctx, table_bytes) or_return
-					table2 := slice.reinterpret([]u16be, table)
-
-					fmt.println("Precision and index:", precision, index)
-					if precision == 0 {
-						fmt.println("Quantization Table len:", len(table))
-						fmt.println("Quantization Table:", table)
-					} else if precision == 1 {
-						fmt.println("Quantization Table len:", len(table2))
-						fmt.println("Quantization Table:", table2)
+						table := compress.read_slice(ctx, table_bytes) or_return
+						for v, i in slice.reinterpret([]u16be, table) {
+							quantization[index][i] = v
+						}
+					} else {
+						table := compress.read_slice(ctx, table_bytes) or_return
+						for v, i in table {
+							quantization[index][i] = cast(u16be)v
+						}
 					}
 
 					length -= table_bytes + 1
@@ -356,7 +355,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					type := cast(Coefficient)((type_index >> 4) & 0xF)
 					id := type_index & 0xF
 
-					lengths := compress.read_slice(ctx, 16) or_return
+					lengths := compress.read_slice(ctx, HUFFMAN_MAX_BITS) or_return
 					num_symbols := 0
 					for length, i in lengths {
 						num_symbols += cast(int)length
@@ -366,10 +365,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					symbols := compress.read_slice(ctx, num_symbols) or_return
 					copy(huffman[type][id].symbols[:], symbols)
 
-					length -= cast(u16be)(1 + 16 + num_symbols)
+					length -= cast(u16be)(1 + HUFFMAN_MAX_BITS + num_symbols)
 
 					code: u32 = 0
-					for i in 0..<16 {
+					for i in 0..<HUFFMAN_MAX_BITS {
 						for j := huffman[type][id].offsets[i]; j < huffman[type][id].offsets[i + 1]; j += 1 {
 							huffman[type][id].codes[j] = code
 							code += 1
@@ -443,6 +442,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					// https://www.geocities.ws/crestwoodsdd/JPEG.htm
 					h_v_factors := compress.read_u8(ctx) or_return
 					quantization_table_id := compress.read_u8(ctx) or_return
+					color_components[id].quantization_table_id = quantization_table_id
 					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_id)
 				}
 			case .SOF1: // Extended sequential DCT
@@ -471,8 +471,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				unimplemented("SOF15")
 			case .SOS:
 				// TODO: SOS cannot come before SOFn. This is a fatal decoding error and we should abort.
-
-				color_components: [Component]ColorComponent
 
 				length := (compress.read_data(ctx, u16be) or_return) - 2
 				num_components := compress.read_u8(ctx) or_return
@@ -509,9 +507,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 				for m in 0..<mcu_count {
 				component_loop: for c in 1..=img.channels {
-						mcu := &mcus[m][cast(Component)c]
-						dc_table := huffman[.DC][color_components[cast(Component)c].dc_table_id]
-						ac_table := huffman[.AC][color_components[cast(Component)c].ac_table_id]
+						c := cast(Component)c
+						mcu := &mcus[m][c]
+						dc_table := huffman[.DC][color_components[c].dc_table_id]
+						ac_table := huffman[.AC][color_components[c].ac_table_id]
+						quantization_table := quantization[color_components[c].quantization_table_id]
 
 						length := get_symbol(ctx, dc_table)
 
@@ -524,16 +524,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						if length != 0 && dc_coeff < (1 << (length - 1)) {
 							dc_coeff -= (1 << length) - 1
 						}
-						mcu[0] = dc_coeff + previous_dc[cast(Component)c]
-						previous_dc[cast(Component)c] = mcu[0]
+						mcu[0] = (dc_coeff + previous_dc[c]) * cast(i16)quantization_table[zigzag[0]]
+						previous_dc[c] = dc_coeff + previous_dc[c]
 
-						// TODO: CONTINUE FROM HERE. We go out of bounds for later MCUs here
-						// because the scan data contains 0xFF00 and we don't skip over the
-						// stuffing byte so we end up reading incorrect bits.
-						//
-						// One thing we could do is copy the MSB bit reading procs from compress/common.odin
-						// to here and modify them to skip stuffing bytes and handle reset markers and EOI.
-						// This is probably the best solution we can do without having to do extra needless allocations.
 						for i := 1; i < 64; i += 1 {
 							// High nibble is amount of 0s to skip.
 							// Low nibble is length of coeff.
@@ -570,7 +563,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 								ac_coeff -= (1 << ac_coeff_len) - 1
 							}
 
-							mcu[zigzag[i]] = ac_coeff
+							mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[zigzag[i]]
 						}
 					}
 				}
@@ -592,7 +585,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				}
 
-				//os.close(fd)
+				os.close(fd)
 
 				break loop
 			case .TEM:
