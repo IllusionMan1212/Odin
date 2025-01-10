@@ -33,7 +33,7 @@ HuffmanTable :: struct {
 	offsets: [HUFFMAN_MAX_BITS + 1]byte,
 }
 
-QuantizationTable :: []u16be
+QuantizationTable :: [64]u16be
 
 ColorComponent :: struct {
 	dc_table_id: u8,
@@ -174,11 +174,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 	huffman: [Coefficient][4]HuffmanTable
 	quantization: [4]QuantizationTable
-	defer for i in 0..<4 {
-		delete(quantization[i])
-	}
 	color_components: [Component]ColorComponent
 	mcus: []MCU
+	defer delete(mcus)
 
 	loop: for {
 		first := compress.read_u8(ctx) or_return
@@ -326,8 +324,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					precision_and_index := compress.read_u8(ctx) or_return
 					precision := precision_and_index >> 4
 					index := precision_and_index & 0xF
-
-					quantization[index] = make(QuantizationTable, 64)
 
 					// When precision is 0, we read 64 u8s.
 					// when it's 1, we read 64 u16s.
