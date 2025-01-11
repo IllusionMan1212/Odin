@@ -42,8 +42,6 @@ Component :: enum u8 {
 	Y = 1,
 	Cb = 2,
 	Cr = 3,
-	I = 4,
-	Q = 5,
 }
 
 HuffmanTable :: struct {
@@ -432,18 +430,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					// 1 = Y,
 					// 2 = Cb,
 					// 3 = Cr,
-					// 4 = I,
-					// 5 = Q,
-					// TODO: YIQ is a different color space that JPEGs supposedly support, will have to double check the spec.
-					// I will likely not have IQ in the component enum and just treat them as errors.
-					// If someone can provide enough evidence that the JPEG compression format OR the JFIF file format
-					// is supposed to support this color space then we'll add support for it, but now for this is just noise.
 					id := cast(Component)compress.read_u8(ctx) or_return
-
-					if id == .I || id == .Q {
-						panic("YIQ color space detected")
-						// TODO: return error or something
-					}
 
 					// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
 					// decoders handle them just fine. I guess we'll add support for that too.
@@ -718,8 +705,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						}
 					}
 
-					// TODO: CONTINUE FROM HERE. We finally get an image. Although there's a bug somewhere
-					// we're getting jagged pixels and stuff
 					for i in 0..<64 {
 						r := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] + 1.402 * cast(f32)mcus[m][.Cr][i] + 128, 0, 255)
 						g := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] - 0.344 * cast(f32)mcus[m][.Cb][i] - 0.714 * cast(f32)mcus[m][.Cr][i] + 128, 0, 255)
