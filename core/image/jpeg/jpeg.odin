@@ -3,6 +3,7 @@ package jpeg
 import "core:bytes"
 import "core:compress"
 import "core:fmt"
+import "core:math"
 import "core:os"
 import "core:image"
 import "core:slice"
@@ -13,6 +14,23 @@ Options :: image.Options
 
 HUFFMAN_MAX_SYMBOLS :: 162
 HUFFMAN_MAX_BITS  :: 16
+
+// IDCT scaling factors
+m0 := 2.0 * math.cos_f32(1.0 / 16.0 * 2.0 * math.PI)
+m1 := 2.0 * math.cos_f32(2.0 / 16.0 * 2.0 * math.PI)
+m3 := 2.0 * math.cos_f32(2.0 / 16.0 * 2.0 * math.PI)
+m5 := 2.0 * math.cos_f32(3.0 / 16.0 * 2.0 * math.PI)
+m2 := m0 - m5
+m4 := m0 + m5
+
+s0 := math.cos_f32(0.0 / 16.0 * math.PI) / math.sqrt_f32(8.0)
+s1 := math.cos_f32(1.0 / 16.0 * math.PI) / 2.0
+s2 := math.cos_f32(2.0 / 16.0 * math.PI) / 2.0
+s3 := math.cos_f32(3.0 / 16.0 * math.PI) / 2.0
+s4 := math.cos_f32(4.0 / 16.0 * math.PI) / 2.0
+s5 := math.cos_f32(5.0 / 16.0 * math.PI) / 2.0
+s6 := math.cos_f32(6.0 / 16.0 * math.PI) / 2.0
+s7 := math.cos_f32(7.0 / 16.0 * math.PI) / 2.0
 
 Coefficient :: enum u8 {
 	DC,
@@ -487,11 +505,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				//fmt.println("Se:", Se)
 				//fmt.println("Ah Al:", Ah_Al)
 
-				// TODO: Handle 0xFF00 by ignoring the 00, this is a bit harder because these 0x00 bytes are always byte-aligned
-				// meaning we can't just look at 8 bits from the bitstream and see if they're 0s
-				// we _could_ push to a dyn array but that's allocation and I think we can do it without allocation
-				// maybe some mix of looking at bytes and bits (read_u8 and read_bits_lsb)
-
 				mcuWidth := (img.width + 7) / 8
 				mcuHeight := (img.height + 7) / 8
 				mcu_count := (mcuHeight * mcuWidth)
@@ -561,6 +574,152 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 							mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[zigzag[i]]
 						}
+
+					}
+
+					for c in 1..=img.channels {
+						c := cast(Component)c
+						mcu := &mcus[m][c]
+
+						for i in 0..<8 {
+							g0 := cast(f32)mcu[0 * 8 + i] * s0
+							g1 := cast(f32)mcu[4 * 8 + i] * s4
+							g2 := cast(f32)mcu[2 * 8 + i] * s2
+							g3 := cast(f32)mcu[6 * 8 + i] * s6
+							g4 := cast(f32)mcu[5 * 8 + i] * s5
+							g5 := cast(f32)mcu[1 * 8 + i] * s1
+							g6 := cast(f32)mcu[7 * 8 + i] * s7
+							g7 := cast(f32)mcu[3 * 8 + i] * s3
+
+							f4 := g4 - g7
+							f5 := g5 + g6
+							f6 := g5 - g6
+							f7 := g4 + g7
+
+							e0 := g0
+							e1 := g1
+							e2 := g2 - g3
+							e3 := g2 + g3
+							e4 := f4
+							e5 := f5 - f7
+							e6 := f6
+							e7 := f5 + f7
+							e8 := f4 + f6
+
+							d0 := e0
+							d1 := e1
+							d2 := e2 * m1
+							d3 := e3
+							d4 := e4 * m2
+							d5 := e5 * m3
+							d6 := e6 * m4
+							d7 := e7
+							d8 := e8 * m5
+
+							c0 := d0 + d1
+							c1 := d0 - d1
+							c2 := d2 - d3
+							c3 := d3
+							c4 := d4 + d8
+							c5 := d5 + d7
+							c6 := d6 - d8
+							c7 := d7
+							c8 := c5 - c6
+
+							b0 := c0 + c3
+							b1 := c1 + c2
+							b2 := c1 - c2
+							b3 := c0 - c3
+							b4 := c4 - c8
+							b5 := c8
+							b6 := c6 - c7
+							b7 := c7
+
+							mcu[0 * 8 + i] = cast(i16)(b0 + b7)
+							mcu[1 * 8 + i] = cast(i16)(b1 + b6)
+							mcu[2 * 8 + i] = cast(i16)(b2 + b5)
+							mcu[3 * 8 + i] = cast(i16)(b3 + b4)
+							mcu[4 * 8 + i] = cast(i16)(b3 - b4)
+							mcu[5 * 8 + i] = cast(i16)(b2 - b5)
+							mcu[6 * 8 + i] = cast(i16)(b1 - b6)
+							mcu[7 * 8 + i] = cast(i16)(b0 - b7)
+						}
+
+						for i in 0..<8 {
+							g0 := cast(f32)mcu[i * 8 + 0] * s0
+							g1 := cast(f32)mcu[i * 8 + 4] * s4
+							g2 := cast(f32)mcu[i * 8 + 2] * s2
+							g3 := cast(f32)mcu[i * 8 + 6] * s6
+							g4 := cast(f32)mcu[i * 8 + 5] * s5
+							g5 := cast(f32)mcu[i * 8 + 1] * s1
+							g6 := cast(f32)mcu[i * 8 + 7] * s7
+							g7 := cast(f32)mcu[i * 8 + 3] * s3
+
+							f4 := g4 - g7
+							f5 := g5 + g6
+							f6 := g5 - g6
+							f7 := g4 + g7
+
+							e0 := g0
+							e1 := g1
+							e2 := g2 - g3
+							e3 := g2 + g3
+							e4 := f4
+							e5 := f5 - f7
+							e6 := f6
+							e7 := f5 + f7
+							e8 := f4 + f6
+
+							d0 := e0
+							d1 := e1
+							d2 := e2 * m1
+							d3 := e3
+							d4 := e4 * m2
+							d5 := e5 * m3
+							d6 := e6 * m4
+							d7 := e7
+							d8 := e8 * m5
+
+							c0 := d0 + d1
+							c1 := d0 - d1
+							c2 := d2 - d3
+							c3 := d3
+							c4 := d4 + d8
+							c5 := d5 + d7
+							c6 := d6 - d8
+							c7 := d7
+							c8 := c5 - c6
+
+							b0 := c0 + c3
+							b1 := c1 + c2
+							b2 := c1 - c2
+							b3 := c0 - c3
+							b4 := c4 - c8
+							b5 := c8
+							b6 := c6 - c7
+							b7 := c7
+
+							mcu[i * 8 + 0] = cast(i16)(b0 + b7)
+							mcu[i * 8 + 1] = cast(i16)(b1 + b6)
+							mcu[i * 8 + 2] = cast(i16)(b2 + b5)
+							mcu[i * 8 + 3] = cast(i16)(b3 + b4)
+							mcu[i * 8 + 4] = cast(i16)(b3 - b4)
+							mcu[i * 8 + 5] = cast(i16)(b2 - b5)
+							mcu[i * 8 + 6] = cast(i16)(b1 - b6)
+							mcu[i * 8 + 7] = cast(i16)(b0 - b7)
+						}
+					}
+
+					// TODO: CONTINUE FROM HERE. We finally get an image. Although there's a bug somewhere
+					// we're getting jagged pixels and stuff
+					for i in 0..<64 {
+						r := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] + 1.402 * cast(f32)mcus[m][.Cr][i] + 128, 0, 255)
+						g := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] - 0.344 * cast(f32)mcus[m][.Cb][i] - 0.714 * cast(f32)mcus[m][.Cr][i] + 128, 0, 255)
+						b := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] + 1.772 * cast(f32)mcus[m][.Cb][i] + 128, 0, 255)
+
+						mcus[m][.Y][i] = r
+						mcus[m][.Cb][i] = g
+						mcus[m][.Cr][i] = b
 					}
 				}
 
