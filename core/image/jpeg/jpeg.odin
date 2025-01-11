@@ -533,7 +533,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						if length != 0 && dc_coeff < (1 << (length - 1)) {
 							dc_coeff -= (1 << length) - 1
 						}
-						mcu[0] = (dc_coeff + previous_dc[c]) * cast(i16)quantization_table[zigzag[0]]
+						mcu[0] = (dc_coeff + previous_dc[c]) * cast(i16)quantization_table[0]
 						previous_dc[c] = dc_coeff + previous_dc[c]
 
 						for i := 1; i < 64; i += 1 {
@@ -572,7 +572,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 								ac_coeff -= (1 << ac_coeff_len) - 1
 							}
 
-							mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[zigzag[i]]
+							mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[i]
 						}
 
 					}
