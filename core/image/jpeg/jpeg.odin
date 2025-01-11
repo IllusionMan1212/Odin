@@ -4,6 +4,7 @@ import "core:bytes"
 import "core:compress"
 import "core:fmt"
 import "core:math"
+import "core:mem"
 import "core:os"
 import "core:image"
 import "core:slice"
@@ -193,6 +194,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	huffman: [Coefficient][4]HuffmanTable
 	quantization: [4]QuantizationTable
 	color_components: [Component]ColorComponent
+	restart_interval: u16be
 	mcus: []MCU
 	defer delete(mcus)
 
@@ -393,6 +395,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .EOI:
 				fmt.println("Got EOI")
 				break loop
+			case .DRI:
+				length := (compress.read_data(ctx, u16be) or_return) - 2
+				restart_interval = compress.read_data(ctx, u16be) or_return
+				fmt.println("Restart Interval is:", restart_interval)
+				assert(restart_interval == 0, "Non-zero restart interval. We don't handle those")
 			case .RST0..=.RST7:
 				// TODO: These are parameter-less markers. i.e. No length, No value. Just a marker.
 				unimplemented(fmt.tprint("%v marker", marker))
@@ -458,6 +465,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					quantization_table_id := compress.read_u8(ctx) or_return
 					color_components[id].quantization_table_id = quantization_table_id
 					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_id)
+					assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
 				}
 			case .SOF1: // Extended sequential DCT
 				unimplemented("SOF1")
@@ -505,9 +513,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				//fmt.println("Se:", Se)
 				//fmt.println("Ah Al:", Ah_Al)
 
-				mcuWidth := (img.width + 7) / 8
-				mcuHeight := (img.height + 7) / 8
-				mcu_count := (mcuHeight * mcuWidth)
+				mcu_width := (img.width + 7) / 8
+				mcu_height := (img.height + 7) / 8
+				mcu_count := (mcu_height * mcu_width)
 				mcus = make([]MCU, mcu_count)
 
 				previous_dc: [Component]i16
@@ -723,23 +731,31 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				}
 
-				fd := os.open("bruh.image", os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o777) or_else panic("Failed to open out file")
+				if resize(&img.pixels.buf, img.width * img.height * img.channels) != nil {
+					return img, .Unable_To_Allocate_Or_Resize
+				}
 
 				for y in 0..<img.height {
-					mcuRow := y / 8
-					pixelRow := y % 8
+					mcu_row := y / 8
+					pixel_row := y % 8
 					for x in 0..<img.width {
-						mcuCol := x / 8
-						pixelCol := x % 8
-						mcuIndex := mcuRow * mcuWidth + mcuCol
-						pixelIndex := pixelRow * 8 + pixelCol
+						mcu_col := x / 8
+						pixel_col := x % 8
+						mcu_idx := mcu_row * mcu_width + mcu_col
+						pixel_idx := pixel_row * 8 + pixel_col
 
-						os.write_byte(fd, cast(u8)mcus[mcuIndex][.Y][pixelIndex])
-						os.write_byte(fd, cast(u8)mcus[mcuIndex][.Cb][pixelIndex])
-						os.write_byte(fd, cast(u8)mcus[mcuIndex][.Cr][pixelIndex])
+
+						if img.channels == 3 {
+							out := mem.slice_data_cast([]image.RGB_Pixel, img.pixels.buf[:])
+							out[y * img.width + x] = {cast(byte)mcus[mcu_idx][.Y][pixel_idx], cast(byte)mcus[mcu_idx][.Cb][pixel_idx], cast(byte)mcus[mcu_idx][.Cr][pixel_idx]}
+						} else {
+							img.pixels.buf[y * img.width + x] = cast(byte)mcus[mcu_idx][.Y][pixel_idx]
+						}
 					}
 				}
 
+				fd := os.open("bruh.image", os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o777) or_else panic("Failed to open out file")
+				os.write(fd, img.pixels.buf[:])
 				os.close(fd)
 
 				break loop
