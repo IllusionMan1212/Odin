@@ -590,6 +590,14 @@ JPEG_Error :: enum {
 	Invalid_JFXX_Extension_Code,
 	Encountered_SOS_Before_SOF,
 	JPEG_Thumbnail_Decoding_Error,
+	Invalid_Quantization_Table_Precision,
+	Invalid_Quantization_Table_Index,
+	Invalid_Huffman_Coefficient_Type,
+	Invalid_Huffman_Table_Index,
+	Unsupported_Frame_Type,
+	Invalid_Frame_Bit_Depth_Combo,
+	Invalid_Horizontal_Sampling_Factor,
+	Invalid_Vertical_Sampling_Factor,
 }
 
 JFIF_Unit :: enum byte {

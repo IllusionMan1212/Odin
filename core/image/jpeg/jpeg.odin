@@ -53,9 +53,9 @@ HuffmanTable :: struct {
 QuantizationTable :: [64]u16be
 
 ColorComponent :: struct {
-	dc_table_id: u8,
-	ac_table_id: u8,
-	quantization_table_id: u8,
+	dc_table_idx: u8,
+	ac_table_idx: u8,
+	quantization_table_idx: u8,
 }
 
 MCU :: [Component][64]i16
@@ -348,6 +348,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					precision := precision_and_index >> 4
 					index := precision_and_index & 0xF
 
+					if precision != 0 && precision != 1 {
+						return img, .Invalid_Quantization_Table_Precision
+					}
+
+					if index < 0 || index > 3 {
+						return img, .Invalid_Quantization_Table_Index
+					}
+
 					// When precision is 0, we read 64 u8s.
 					// when it's 1, we read 64 u16s.
 					table_bytes := 64
@@ -372,24 +380,32 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				for length > 0 {
 					type_index := compress.read_u8(ctx) or_return
 					type := cast(Coefficient)((type_index >> 4) & 0xF)
-					id := type_index & 0xF
+					index := type_index & 0xF
+
+					if type != .DC && type != .AC {
+						return img, .Invalid_Huffman_Coefficient_Type
+					}
+
+					if index < 0 || index > 3 {
+						return img, .Invalid_Huffman_Table_Index
+					}
 
 					lengths := compress.read_slice(ctx, HUFFMAN_MAX_BITS) or_return
 					num_symbols := 0
 					for length, i in lengths {
 						num_symbols += cast(int)length
-						huffman[type][id].offsets[i + 1] = cast(u8)num_symbols
+						huffman[type][index].offsets[i + 1] = cast(u8)num_symbols
 					}
 
 					symbols := compress.read_slice(ctx, num_symbols) or_return
-					copy(huffman[type][id].symbols[:], symbols)
+					copy(huffman[type][index].symbols[:], symbols)
 
 					length -= cast(u16be)(1 + HUFFMAN_MAX_BITS + num_symbols)
 
 					code: u32 = 0
 					for i in 0..<HUFFMAN_MAX_BITS {
-						for j := huffman[type][id].offsets[i]; j < huffman[type][id].offsets[i + 1]; j += 1 {
-							huffman[type][id].codes[j] = code
+						for j := huffman[type][index].offsets[i]; j < huffman[type][index].offsets[i + 1]; j += 1 {
+							huffman[type][index].codes[j] = code
 							code += 1
 						}
 						code <<= 1
@@ -410,7 +426,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .RST0..=.RST7:
 				// TODO: These are parameter-less markers. i.e. No length, No value. Just a marker.
 				unimplemented(fmt.tprint("%v marker", marker))
-			case .SOF0: // Baseline DCT
+			case .SOF0: // Baseline sequential DCT
 				assert(img.channels == 0, "Encountered more than one SOF0 marker")
 
 				length := (compress.read_data(ctx, u16be) or_return) - 2
@@ -422,6 +438,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				img.height = cast(int)height
 				img.depth = cast(int)precision
 				img.channels = cast(int)components
+
+				if precision != 8 {
+					return img, .Invalid_Frame_Bit_Depth_Combo
+				}
 
 				if width == 0 || height == 0 {
 					return img, .Invalid_Image_Dimensions
@@ -450,37 +470,52 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					// Thus, the Cb and Cr components must be quadrupled in size during decompression
 					// https://www.geocities.ws/crestwoodsdd/JPEG.htm
 					h_v_factors := compress.read_u8(ctx) or_return
-					quantization_table_id := compress.read_u8(ctx) or_return
-					color_components[id].quantization_table_id = quantization_table_id
-					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_id)
+					horizontal_sampling := h_v_factors >> 4
+					vertical_sampling := h_v_factors & 0xF
+
+					if horizontal_sampling < 1 || horizontal_sampling > 4 {
+						return img, .Invalid_Horizontal_Sampling_Factor
+					}
+					if vertical_sampling < 1 || vertical_sampling > 4 {
+						return img, .Invalid_Vertical_Sampling_Factor
+					}
+
+					quantization_table_idx := compress.read_u8(ctx) or_return
+
+					if quantization_table_idx < 0 || quantization_table_idx > 3 {
+						return img, .Invalid_Quantization_Table_Index
+					}
+
+					color_components[id].quantization_table_idx = quantization_table_idx
+					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_idx)
 					assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
 				}
 			case .SOF1: // Extended sequential DCT
 				unimplemented("SOF1")
 			case .SOF2: // Progressive DCT
 				unimplemented("SOF2")
-			case .SOF3: // Lossless (sequential)
-				unimplemented("SOF3")
-			case .SOF5: // Differential sequential DCT
-				unimplemented("SOF5")
-			case .SOF6: // Differential progressive DCT
-				unimplemented("SOF6")
-			case .SOF7: // Differential lossless (sequential)
-				unimplemented("SOF7")
 			case .SOF9: // Extended sequential DCT, Arithmetic coding
 				unimplemented("SOF9")
+			case .SOF3: // Lossless (sequential)
+				fallthrough
+			case .SOF5: // Differential sequential DCT
+				fallthrough
+			case .SOF6: // Differential progressive DCT
+				fallthrough
+			case .SOF7: // Differential lossless (sequential)
+				fallthrough
 			case .SOF10: // Progressive DCT, Arithmetic coding
-				unimplemented("SOF10")
+				fallthrough
 			case .SOF11: // Lossless (sequential), Arithmetic coding
-				unimplemented("SOF11")
+				fallthrough
 			case .SOF13: // Differential sequential DCT, Arithmetic coding
-				unimplemented("SOF13")
+				fallthrough
 			case .SOF14: // Differential progressive DCT, Arithmetic coding
-				unimplemented("SOF14")
+				fallthrough
 			case .SOF15: // Differential lossless (sequential), Arithmetic coding
-				unimplemented("SOF15")
+				return img, .Unsupported_Frame_Type
 			case .SOS:
-				if img.channels == 0 || img.depth == 0 || img.width == 0 || img.height == 0 {
+				if img.channels == 0 && img.depth == 0 && img.width == 0 && img.height == 0 {
 					return img, .Encountered_SOS_Before_SOF
 				}
 
@@ -489,11 +524,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				for i in 0..<num_components {
 					component_id := cast(Component)compress.read_u8(ctx) or_return
 					// high 4 is DC, low 4 is AC
-					huffman_table_info := compress.read_u8(ctx) or_return
-					dc_table_id := huffman_table_info >> 4
-					ac_table_id := huffman_table_info & 0xF
-					color_components[component_id].dc_table_id = dc_table_id
-					color_components[component_id].ac_table_id = ac_table_id
+					coefficient_indices := compress.read_u8(ctx) or_return
+					dc_table_idx := coefficient_indices >> 4
+					ac_table_idx := coefficient_indices & 0xF
+					color_components[component_id].dc_table_idx = dc_table_idx
+					color_components[component_id].ac_table_idx = ac_table_idx
 				}
 				// TODO: These aren't used for baseline sequential DCT, only progressive.
 				Ss := compress.read_u8(ctx) or_return
@@ -516,9 +551,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				component_loop: for c in 1..=img.channels {
 						c := cast(Component)c
 						mcu := &mcus[m][c]
-						dc_table := huffman[.DC][color_components[c].dc_table_id]
-						ac_table := huffman[.AC][color_components[c].ac_table_id]
-						quantization_table := quantization[color_components[c].quantization_table_id]
+						dc_table := huffman[.DC][color_components[c].dc_table_idx]
+						ac_table := huffman[.AC][color_components[c].ac_table_idx]
+						quantization_table := quantization[color_components[c].quantization_table_idx]
 
 						length := get_symbol(ctx, dc_table)
 
