@@ -443,6 +443,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					return img, .Invalid_Frame_Bit_Depth_Combo
 				}
 
+				// TODO: spec allows for the height to be 0 on the condition that a DNL marker MUST exist to define
+				// how many lines in the frame we have.
+				// ISO/IEC 10918-1: 1993.
+				// Section B.2.5
 				if width == 0 || height == 0 {
 					return img, .Invalid_Image_Dimensions
 				}
@@ -456,7 +460,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 					// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
 					// decoders handle them just fine. Should we support that too?
-					if id == cast(Component)0 || id > .Cr {
+					if id < .Y || id > .Cr {
 						return img, .Image_Does_Not_Adhere_to_Spec
 					}
 
@@ -521,16 +525,29 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 				length := (compress.read_data(ctx, u16be) or_return) - 2
 				num_components := compress.read_u8(ctx) or_return
+				if num_components != 1 && num_components != 3 {
+					return img, .Invalid_Number_Of_Channels
+				}
+
 				for i in 0..<num_components {
 					component_id := cast(Component)compress.read_u8(ctx) or_return
+					if component_id < .Y || component_id > .Cr {
+						return img, .Image_Does_Not_Adhere_to_Spec
+					}
+
 					// high 4 is DC, low 4 is AC
 					coefficient_indices := compress.read_u8(ctx) or_return
 					dc_table_idx := coefficient_indices >> 4
 					ac_table_idx := coefficient_indices & 0xF
+
+					if (dc_table_idx < 0 || dc_table_idx > 3) || (ac_table_idx < 0 || ac_table_idx > 3) {
+						return img, .Invalid_Huffman_Table_Index
+					}
+
 					color_components[component_id].dc_table_idx = dc_table_idx
 					color_components[component_id].ac_table_idx = ac_table_idx
 				}
-				// TODO: These aren't used for baseline sequential DCT, only progressive.
+				// TODO: These aren't used for sequential DCT, only progressive and lossless.
 				Ss := compress.read_u8(ctx) or_return
 				Se := compress.read_u8(ctx) or_return
 				Ah_Al := compress.read_u8(ctx) or_return
