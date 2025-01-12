@@ -583,6 +583,9 @@ TGA_Info :: struct {
 */
 JFIF_Magic := [?]byte{0x4A, 0x46, 0x49, 0x46} // "JFIF"
 JFXX_Magic := [?]byte{0x4A, 0x46, 0x58, 0x58} // "JFXX"
+// Photoshop's Image Resource Block
+// https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/#50577409_46269
+IRB_Signature :: u32be(0x3842494D)
 
 JPEG_Error :: enum {
 	None = 0,
@@ -598,6 +601,8 @@ JPEG_Error :: enum {
 	Invalid_Frame_Bit_Depth_Combo,
 	Invalid_Horizontal_Sampling_Factor,
 	Invalid_Vertical_Sampling_Factor,
+	Unsupported_APP13_Identifier,
+	Invalid_IRB_Signature,
 }
 
 JFIF_Unit :: enum byte {
@@ -629,7 +634,11 @@ JFXX_Extension_Code :: enum u8 {
 	Thumbnail_3_Byte_RGB = 0x13,
 }
 
-JPEG_Marker :: enum u16be {
+IRB_Id :: enum u16be {
+	IPTC_NAA = 0x0404
+}
+
+JPEG_Marker :: enum u8 {
 	SOF0  = 0xC0,
 	SOF1  = 0xC1,
 	SOF2  = 0xC2,
