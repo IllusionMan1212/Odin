@@ -164,6 +164,7 @@ Error :: union #shared_nil {
 	PNG_Error,
 	QOI_Error,
 	BMP_Error,
+	JPEG_Error,
 
 	compress.Error,
 	compress.General_Error,
@@ -580,8 +581,16 @@ TGA_Info :: struct {
 /*
 	JPEG-specific
 */
-JFIF_Magic :: u32be(0x4A464946) // "JFIF"
-JFXX_Magic :: u32be(0x4A465858) // "JFXX"
+JFIF_Magic := [?]byte{0x4A, 0x46, 0x49, 0x46} // "JFIF"
+JFXX_Magic := [?]byte{0x4A, 0x46, 0x58, 0x58} // "JFXX"
+
+JPEG_Error :: enum {
+	None = 0,
+	Duplicate_SOI_Marker,
+	Invalid_JFXX_Extension_Code,
+	Encountered_SOS_Before_SOF,
+	JPEG_Thumbnail_Decoding_Error,
+}
 
 JFIF_Unit :: enum byte {
 	None = 0,
@@ -590,7 +599,6 @@ JFIF_Unit :: enum byte {
 }
 
 JFIF_APP0 :: struct {
-	ident: u32be,
 	version: u16be,
 	units: JFIF_Unit,
 	x_density: u16be,

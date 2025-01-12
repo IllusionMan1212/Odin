@@ -205,19 +205,18 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				// If we encounter multiple FF then just skip them
 				continue
 			case .SOI:
-				// TODO: SOI was already handled before the loop. This is likely an error.
-				fmt.eprintln("Duplicate SOI found")
+				return img, .Duplicate_SOI_Marker
 			case .APP0:
+				ident := make([dynamic]byte, 0, 16, context.temp_allocator)
 				length := cast(int)((compress.read_data(ctx, u16be) or_return) - 2)
-				// TODO: Assuming the identifier is 4 bytes long with a 5th NUL byte is wrong.
-				// The NUL byte is there to terminate a string of arbitrary length, so we should read until we encounter
-				// the NUL byte.
-				ident := compress.read_data(ctx, u32be) or_return
-				// skip NUL byte
-				NUL := compress.read_u8(ctx) or_return
-				assert(NUL == 0x00, "APP0 identifier NUL byte is not NUL. Identifier might not be 4 bytes long")
-				switch ident {
-				case image.JFIF_Magic:
+				for {
+					b := compress.read_u8(ctx) or_return
+					if b == 0x00 {
+						break
+					}
+					append(&ident, b)
+				}
+				if slice.equal(ident[:], image.JFIF_Magic[:]) {
 					version := compress.read_data(ctx, u16be) or_return
 					units := cast(image.JFIF_Unit)(compress.read_u8(ctx) or_return)
 					x_density := compress.read_data(ctx, u16be) or_return
@@ -241,7 +240,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 							info = img.metadata.(^image.JPEG_Info)
 						}
 						info.jfif_app0 = image.JFIF_APP0{
-							ident,
 							version,
 							units,
 							x_density,
@@ -252,8 +250,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						}
 						img.metadata = info
 					}
-				case image.JFXX_Magic:
+				} else if slice.equal(ident[:], image.JFXX_Magic[:]) {
 					extension_code := cast(image.JFXX_Extension_Code)compress.read_u8(ctx) or_return
+					// TODO: the thumbnail can be greyscale afaik. setting the type to []RGB_Pixel is le bad.
+					// Ideally we'd have it be []byte and we'd specify if its RGB or greyscale. The JFXX_APP0
+					// thumbnail member has to also be changed to fit this, we should also add an enum member to specify
+					// how many channels it has (or just a is_RGB boolean member or something)
+					//
+					// JFIF_APP0's thumbnail member type MUST NOT be changed because it's always RGB.
 					thumbnail: []image.RGB_Pixel
 
 					switch extension_code {
@@ -267,6 +271,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						// to exist after APP0 is processed.
 						// I guess we just copy the pixel data to `thumbnail` and disregard
 						// all the other information the jpeg-compressed thumbnail provides.
+						if err != nil {
+							return img, .JPEG_Thumbnail_Decoding_Error
+						}
 
 						unimplemented(fmt.tprintf("%v", extension_code))
 					case .Thumbnail_3_Byte_RGB:
@@ -321,14 +328,12 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						//	img.metadata = info
 						//}
 					case:
-						// TODO: should this be an error or should we gracefully ignore unknown/corrupt extension codes?
-						fmt.println("Invalid JFXX extension code")
+						return img, .Invalid_JFXX_Extension_Code
 					}
-				case:
+				} else {
 					fmt.println("Unrecognized APP0 identifier. Skipping")
-					// TODO: ditto about the arbitrary length string. We're subtracting 5
-					// for the 4 byte identifier and the 5th NUL byte which is wrong.
-					compress.read_slice(ctx, length - 5) or_return
+					// - 1 for the NUL byte
+					compress.read_slice(ctx, length - len(ident) - 1) or_return
 					continue
 				}
 			case .COM:
@@ -391,12 +396,16 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				}
 			case .EOI:
+				// TODO: this is currently useless because we don't look for it when reading the Entropy Coded Stream
+				// and we keep reading bits until we either finish all MCUs or we reach end of file.
+				// Not sure what to do though.
 				fmt.println("Got EOI")
 				break loop
 			case .DRI:
 				length := (compress.read_data(ctx, u16be) or_return) - 2
 				restart_interval = compress.read_data(ctx, u16be) or_return
 				fmt.println("Restart Interval is:", restart_interval)
+				// TODO: fix
 				assert(restart_interval == 0, "Non-zero restart interval. We don't handle those")
 			case .RST0..=.RST7:
 				// TODO: These are parameter-less markers. i.e. No length, No value. Just a marker.
@@ -415,28 +424,20 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				img.channels = cast(int)components
 
 				if width == 0 || height == 0 {
-					panic("Invalid image dimensions")
-					//TODO: return error
+					return img, .Invalid_Image_Dimensions
 				}
 
 				if components != 1 && components != 3 {
-					panic("Unsupported number of channels")
-					// TODO: return error
-					// 4 components and 0 components should maybe return different errors
-					// 0 components is just invalid, but 4 components means CMYK and maybe we can support that.
+					return img, .Invalid_Number_Of_Channels
 				}
 
 				for i in 0..<components {
-					// 1 = Y,
-					// 2 = Cb,
-					// 3 = Cr,
 					id := cast(Component)compress.read_u8(ctx) or_return
 
 					// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
-					// decoders handle them just fine. I guess we'll add support for that too.
+					// decoders handle them just fine. Should we support that too?
 					if id == cast(Component)0 || id > .Cr {
-						panic("Invalid component ID")
-						// TODO: return error
+						return img, .Image_Does_Not_Adhere_to_Spec
 					}
 
 					// high 4 is H, low 4 is V
@@ -479,7 +480,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .SOF15: // Differential lossless (sequential), Arithmetic coding
 				unimplemented("SOF15")
 			case .SOS:
-				// TODO: SOS cannot come before SOFn. This is a fatal decoding error and we should abort.
+				if img.channels == 0 || img.depth == 0 || img.width == 0 || img.height == 0 {
+					return img, .Encountered_SOS_Before_SOF
+				}
 
 				length := (compress.read_data(ctx, u16be) or_return) - 2
 				num_components := compress.read_u8(ctx) or_return
@@ -569,7 +572,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 							mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[i]
 						}
-
 					}
 
 					for c in 1..=img.channels {
@@ -732,16 +734,16 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 						if img.channels == 3 {
 							out := mem.slice_data_cast([]image.RGB_Pixel, img.pixels.buf[:])
-							out[y * img.width + x] = {cast(byte)mcus[mcu_idx][.Y][pixel_idx], cast(byte)mcus[mcu_idx][.Cb][pixel_idx], cast(byte)mcus[mcu_idx][.Cr][pixel_idx]}
+							out[y * img.width + x] = {
+								cast(byte)mcus[mcu_idx][.Y][pixel_idx],
+								cast(byte)mcus[mcu_idx][.Cb][pixel_idx],
+								cast(byte)mcus[mcu_idx][.Cr][pixel_idx],
+							}
 						} else {
 							img.pixels.buf[y * img.width + x] = cast(byte)mcus[mcu_idx][.Y][pixel_idx]
 						}
 					}
 				}
-
-				fd := os.open("bruh.image", os.O_WRONLY | os.O_CREATE | os.O_TRUNC, 0o777) or_else panic("Failed to open out file")
-				os.write(fd, img.pixels.buf[:])
-				os.close(fd)
 
 				break loop
 			case .TEM:
