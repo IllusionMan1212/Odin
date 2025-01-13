@@ -15,23 +15,6 @@ Options :: image.Options
 HUFFMAN_MAX_SYMBOLS :: 162
 HUFFMAN_MAX_BITS  :: 16
 
-// IDCT scaling factors
-m0 := 2.0 * math.cos_f32(1.0 / 16.0 * 2.0 * math.PI)
-m1 := 2.0 * math.cos_f32(2.0 / 16.0 * 2.0 * math.PI)
-m3 := 2.0 * math.cos_f32(2.0 / 16.0 * 2.0 * math.PI)
-m5 := 2.0 * math.cos_f32(3.0 / 16.0 * 2.0 * math.PI)
-m2 := m0 - m5
-m4 := m0 + m5
-
-s0 := math.cos_f32(0.0 / 16.0 * math.PI) / math.sqrt_f32(8.0)
-s1 := math.cos_f32(1.0 / 16.0 * math.PI) / 2.0
-s2 := math.cos_f32(2.0 / 16.0 * math.PI) / 2.0
-s3 := math.cos_f32(3.0 / 16.0 * math.PI) / 2.0
-s4 := math.cos_f32(4.0 / 16.0 * math.PI) / 2.0
-s5 := math.cos_f32(5.0 / 16.0 * math.PI) / 2.0
-s6 := math.cos_f32(6.0 / 16.0 * math.PI) / 2.0
-s7 := math.cos_f32(7.0 / 16.0 * math.PI) / 2.0
-
 Coefficient :: enum u8 {
 	DC,
 	AC,
@@ -57,8 +40,9 @@ ColorComponent :: struct {
 	quantization_table_idx: u8,
 }
 
-MCU :: [Component][64]i16
+Block :: [Component][64]i16
 
+@(private="file")
 zigzag := [?]byte{
     0,   1,  8, 16,  9,  2,  3, 10,
     17, 24, 32, 25, 18, 11,  4,  5,
@@ -70,8 +54,8 @@ zigzag := [?]byte{
     53, 60, 61, 54, 47, 55, 62, 63,
 }
 
-@(optimization_mode="favor_size")
-refill_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width := i8(48)) {
+@(optimization_mode="favor_size", private="file")
+refill_msb :: #force_inline proc(z: ^compress.Context_Memory_Input, width := i8(48)) {
 	refill := u64(width)
 	b      := u64(0)
 
@@ -114,33 +98,28 @@ refill_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, 
 	}
 }
 
-refill_msb :: proc{refill_msb_from_memory}
-
-@(optimization_mode="favor_size")
-consume_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) {
+@(optimization_mode="favor_size", private="file")
+consume_bits_msb :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) {
 	z.code_buffer <<= width
 	z.num_bits -= u64(width)
 }
 
+@(private="file")
 byte_align :: #force_inline proc(z: ^compress.Context_Memory_Input) {
 	skip := z.num_bits % 8
 	consume_bits_msb(z, cast(u8)skip)
 }
 
-consume_bits_msb :: proc{consume_bits_msb_from_memory}
-
-@(optimization_mode="favor_size")
-peek_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) -> u32 {
+@(optimization_mode="favor_size", private="file")
+peek_bits_msb :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) -> u32 {
 	if z.num_bits < u64(width) {
 		refill_msb(z)
 	}
 	return u32((z.code_buffer &~ (max(u64) >> width)) >> (64 - width))
 }
 
-peek_bits_msb :: proc{peek_bits_msb_from_memory}
-
-@(optimization_mode="favor_size")
-read_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) -> u32 {
+@(optimization_mode="favor_size", private="file")
+read_bits_msb :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) -> u32 {
 	k := #force_inline peek_bits_msb(z, width)
 	#force_inline consume_bits_msb(z, width)
 	return k
@@ -161,11 +140,12 @@ load_from_bytes :: proc(data: []byte, options := Options{}, allocator := context
 	return img, err
 }
 
+@(private="file")
 get_symbol :: proc(ctx: ^$C, huffman_table: HuffmanTable) -> byte {
 	possible_code: u32 = 0
 
 	for i in 0..<HUFFMAN_MAX_BITS {
-		bit := read_bits_msb_from_memory(ctx, 1)
+		bit := read_bits_msb(ctx, 1)
 		possible_code = (possible_code << 1) | bit
 
 		for j := huffman_table.offsets[i]; j < huffman_table.offsets[i + 1]; j += 1 {
@@ -181,6 +161,23 @@ get_symbol :: proc(ctx: ^$C, huffman_table: HuffmanTable) -> byte {
 load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.allocator) -> (img: ^Image, err: Error) {
 	context.allocator = allocator
 	options := options
+
+	// Precalculate IDCT scaling factors
+	m0 := 2.0 * math.cos_f32(1.0 / 16.0 * 2.0 * math.PI)
+	m1 := 2.0 * math.cos_f32(2.0 / 16.0 * 2.0 * math.PI)
+	m3 := 2.0 * math.cos_f32(2.0 / 16.0 * 2.0 * math.PI)
+	m5 := 2.0 * math.cos_f32(3.0 / 16.0 * 2.0 * math.PI)
+	m2 := m0 - m5
+	m4 := m0 + m5
+
+	s0 := math.cos_f32(0.0 / 16.0 * math.PI) / math.sqrt_f32(8.0)
+	s1 := math.cos_f32(1.0 / 16.0 * math.PI) / 2.0
+	s2 := math.cos_f32(2.0 / 16.0 * math.PI) / 2.0
+	s3 := math.cos_f32(3.0 / 16.0 * math.PI) / 2.0
+	s4 := math.cos_f32(4.0 / 16.0 * math.PI) / 2.0
+	s5 := math.cos_f32(5.0 / 16.0 * math.PI) / 2.0
+	s6 := math.cos_f32(6.0 / 16.0 * math.PI) / 2.0
+	s7 := math.cos_f32(7.0 / 16.0 * math.PI) / 2.0
 
 	// TODO: make sure to handle all the supported options
 	if .info in options {
@@ -205,8 +202,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	quantization: [4]QuantizationTable
 	color_components: [Component]ColorComponent
 	restart_interval: u16be
-	mcus: []MCU
-	defer delete(mcus)
+	mcu_width: int
+	mcu_height: int
+	block_width: int
+	block_height: int
+	horizontal_sampling_factor: u8
+	vertical_sampling_factor: u8
+	blocks: []Block
+	defer delete(blocks)
 
 	loop: for {
 		first = compress.read_u8(ctx) or_return
@@ -450,7 +453,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				// TODO: Return an error
 				panic("Encountered RSTn marker outside the entropy-coded stream")
 			case .SOF0, .SOF1: // Baseline sequential DCT, and extended sequential DCT
-				assert(img.channels == 0, "Encountered more than one SOF0 marker")
+				assert(img.channels == 0, "Encountered more than one SOFn marker")
 
 				// Length
 				compress.read_data(ctx, u16be) or_return
@@ -481,6 +484,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					return img, .Invalid_Number_Of_Channels
 				}
 
+				mcu_width = (img.width + 7) / 8
+				mcu_height = (img.height + 7) / 8
+				block_width = mcu_width
+				block_height = mcu_height
+
 				for _ in 0..<components {
 					id := cast(Component)compress.read_u8(ctx) or_return
 
@@ -508,11 +516,23 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 					// TODO: spec says the range for the sampling factors is 1-4
 					// We only support 1,2 for now.
-					if horizontal_sampling < 1 || horizontal_sampling > 4 {
+					if horizontal_sampling < 1 || horizontal_sampling > 2 {
 						return img, .Invalid_Horizontal_Sampling_Factor
 					}
-					if vertical_sampling < 1 || vertical_sampling > 4 {
+					if vertical_sampling < 1 || vertical_sampling > 2 {
 						return img, .Invalid_Vertical_Sampling_Factor
+					}
+
+					if id == .Y {
+						if horizontal_sampling == 2 && mcu_width % 2 == 1 {
+							block_width += 1
+						}
+						if vertical_sampling == 2 && mcu_height % 2 == 1 {
+							block_height += 1
+						}
+
+						horizontal_sampling_factor = horizontal_sampling
+						vertical_sampling_factor = vertical_sampling
 					}
 
 					// TODO: check for something something factors <=10
@@ -525,7 +545,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 					color_components[id].quantization_table_idx = quantization_table_idx
 					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_idx)
-					assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
+					//assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
 				}
 			case .SOF2: // Progressive DCT
 				unimplemented("SOF2")
@@ -592,225 +612,235 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				//fmt.println("Se:", Se)
 				//fmt.println("Ah Al:", Ah_Al)
 
-				mcu_width := (img.width + 7) / 8
-				mcu_height := (img.height + 7) / 8
-				mcu_count := (mcu_height * mcu_width)
-				mcus = make([]MCU, mcu_count)
+				blocks = make([]Block, block_height * block_width)
 
 				previous_dc: [Component]i16
 
-				fmt.println("MCU count:", mcu_count)
+				fmt.println("Block height:", block_height)
+				fmt.println("Block width:", block_width)
+				fmt.println("MCU height:", mcu_height)
+				fmt.println("MCU width:", mcu_width)
+				fmt.println("Sampling Factor H:", horizontal_sampling_factor)
+				fmt.println("Sampling Factor V:", vertical_sampling_factor)
 
-				for m in 0..<mcu_count {
-					if restart_interval != 0 && m % cast(int)restart_interval == 0 {
-						previous_dc[.Y] = 0
-						previous_dc[.Cb] = 0
-						previous_dc[.Cr] = 0
-						byte_align(ctx)
-					}
-					component_loop:
-					for c in 1..=img.channels {
-						c := cast(Component)c
-						mcu := &mcus[m][c]
-						dc_table := huffman[.DC][color_components[c].dc_table_idx]
-						ac_table := huffman[.AC][color_components[c].ac_table_idx]
-						quantization_table := quantization[color_components[c].quantization_table_idx]
+				// TODO: CONTINUE FROM HERE.
+				// Subsampling "works" (still missing something from the video when it comes to converting from YCbCr to RGB)
+				// for a small 8x8 gimp-made image, but we're still getting the out-of-bounds error for the goldfish_2to1.jpg
+				// file. The goldfish vertical only or horizontal only files don't have an out of bounds but they don't render
+				// correctly.
+				for y := 0; y < mcu_height; y += cast(int)vertical_sampling_factor {
+					for x := 0; x < mcu_width; x += cast(int)horizontal_sampling_factor {
+						blk := y * block_width + x
 
-						length := get_symbol(ctx, dc_table)
+						if restart_interval != 0 && blk % cast(int)restart_interval == 0 {
+							previous_dc[.Y] = 0
+							previous_dc[.Cb] = 0
+							previous_dc[.Cr] = 0
+							byte_align(ctx)
+						}
+						component_loop:
+						for c in 1..=img.channels {
+							for v in 0..<vertical_sampling_factor {
+								for h in 0..<horizontal_sampling_factor {
+									c := cast(Component)c
+									mcu := &blocks[(y + cast(int)v) * block_width + (cast(int)h + x)][c]
+									dc_table := huffman[.DC][color_components[c].dc_table_idx]
+									ac_table := huffman[.AC][color_components[c].ac_table_idx]
+									quantization_table := quantization[color_components[c].quantization_table_idx]
 
-						if length > 11 {
-							fmt.println("DC coefficient length greater than 11")
+									length := get_symbol(ctx, dc_table)
+
+									if length > 11 {
+										fmt.println("DC coefficient length greater than 11")
+									}
+
+									dc_coeff := cast(i16)read_bits_msb(ctx, length)
+
+									if length != 0 && dc_coeff < (1 << (length - 1)) {
+										dc_coeff -= (1 << length) - 1
+									}
+									mcu[0] = (dc_coeff + previous_dc[c]) * cast(i16)quantization_table[0]
+									previous_dc[c] = dc_coeff + previous_dc[c]
+
+									for i := 1; i < 64; i += 1 {
+										// High nibble is amount of 0s to skip.
+										// Low nibble is length of coeff.
+										symbol := get_symbol(ctx, ac_table)
+
+										// Special symbol used to indicate
+										// that the rest of the MCU is filled with 0s
+										if symbol == 0x00 {
+											continue component_loop
+										}
+
+										amnt_zeros := symbol >> 4
+										ac_coeff_len := symbol & 0xF
+										ac_coeff: i16 = 0
+
+										if i + cast(int)amnt_zeros >= 64 {
+											fmt.println("Zero run-length exceeded MCU")
+										}
+
+										i += cast(int)amnt_zeros
+
+										if ac_coeff_len > 10 {
+											fmt.println("AC coefficient length greater than 10")
+										}
+
+										ac_coeff = cast(i16)read_bits_msb(ctx, ac_coeff_len)
+										if ac_coeff < (1 << (ac_coeff_len - 1)) {
+											ac_coeff -= (1 << ac_coeff_len) - 1
+										}
+
+										mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[i]
+									}
+								}
+							}
 						}
 
-						dc_coeff := cast(i16)read_bits_msb_from_memory(ctx, length)
+						for c in 1..=img.channels {
+							c := cast(Component)c
+							mcu := &blocks[blk][c]
 
-						if length != 0 && dc_coeff < (1 << (length - 1)) {
-							dc_coeff -= (1 << length) - 1
-						}
-						mcu[0] = (dc_coeff + previous_dc[c]) * cast(i16)quantization_table[0]
-						previous_dc[c] = dc_coeff + previous_dc[c]
+							for i in 0..<8 {
+								g0 := cast(f32)mcu[0 * 8 + i] * s0
+								g1 := cast(f32)mcu[4 * 8 + i] * s4
+								g2 := cast(f32)mcu[2 * 8 + i] * s2
+								g3 := cast(f32)mcu[6 * 8 + i] * s6
+								g4 := cast(f32)mcu[5 * 8 + i] * s5
+								g5 := cast(f32)mcu[1 * 8 + i] * s1
+								g6 := cast(f32)mcu[7 * 8 + i] * s7
+								g7 := cast(f32)mcu[3 * 8 + i] * s3
 
-						for i := 1; i < 64; i += 1 {
-							// High nibble is amount of 0s to skip.
-							// Low nibble is length of coeff.
-							symbol := get_symbol(ctx, ac_table)
+								f4 := g4 - g7
+								f5 := g5 + g6
+								f6 := g5 - g6
+								f7 := g4 + g7
 
-							// Special symbol used to indicate
-							// that the rest of the MCU is filled with 0s
-							if symbol == 0x00 {
-								continue component_loop
+								e0 := g0
+								e1 := g1
+								e2 := g2 - g3
+								e3 := g2 + g3
+								e4 := f4
+								e5 := f5 - f7
+								e6 := f6
+								e7 := f5 + f7
+								e8 := f4 + f6
+
+								d0 := e0
+								d1 := e1
+								d2 := e2 * m1
+								d3 := e3
+								d4 := e4 * m2
+								d5 := e5 * m3
+								d6 := e6 * m4
+								d7 := e7
+								d8 := e8 * m5
+
+								c0 := d0 + d1
+								c1 := d0 - d1
+								c2 := d2 - d3
+								c3 := d3
+								c4 := d4 + d8
+								c5 := d5 + d7
+								c6 := d6 - d8
+								c7 := d7
+								c8 := c5 - c6
+
+								b0 := c0 + c3
+								b1 := c1 + c2
+								b2 := c1 - c2
+								b3 := c0 - c3
+								b4 := c4 - c8
+								b5 := c8
+								b6 := c6 - c7
+								b7 := c7
+
+								mcu[0 * 8 + i] = cast(i16)(b0 + b7)
+								mcu[1 * 8 + i] = cast(i16)(b1 + b6)
+								mcu[2 * 8 + i] = cast(i16)(b2 + b5)
+								mcu[3 * 8 + i] = cast(i16)(b3 + b4)
+								mcu[4 * 8 + i] = cast(i16)(b3 - b4)
+								mcu[5 * 8 + i] = cast(i16)(b2 - b5)
+								mcu[6 * 8 + i] = cast(i16)(b1 - b6)
+								mcu[7 * 8 + i] = cast(i16)(b0 - b7)
 							}
 
-							amnt_zeros := symbol >> 4
-							ac_coeff_len := symbol & 0xF
-							ac_coeff: i16 = 0
+							for i in 0..<8 {
+								g0 := cast(f32)mcu[i * 8 + 0] * s0
+								g1 := cast(f32)mcu[i * 8 + 4] * s4
+								g2 := cast(f32)mcu[i * 8 + 2] * s2
+								g3 := cast(f32)mcu[i * 8 + 6] * s6
+								g4 := cast(f32)mcu[i * 8 + 5] * s5
+								g5 := cast(f32)mcu[i * 8 + 1] * s1
+								g6 := cast(f32)mcu[i * 8 + 7] * s7
+								g7 := cast(f32)mcu[i * 8 + 3] * s3
 
-							// Special symbol used to indicate
-							// that the next 16 coeffs are 0s
-							//if symbol == 0xF0 {
-							//	amnt_zeros = 16
-							//}
+								f4 := g4 - g7
+								f5 := g5 + g6
+								f6 := g5 - g6
+								f7 := g4 + g7
 
-							if i + cast(int)amnt_zeros >= 64 {
-								fmt.println("Zero run-length exceeded MCU")
+								e0 := g0
+								e1 := g1
+								e2 := g2 - g3
+								e3 := g2 + g3
+								e4 := f4
+								e5 := f5 - f7
+								e6 := f6
+								e7 := f5 + f7
+								e8 := f4 + f6
+
+								d0 := e0
+								d1 := e1
+								d2 := e2 * m1
+								d3 := e3
+								d4 := e4 * m2
+								d5 := e5 * m3
+								d6 := e6 * m4
+								d7 := e7
+								d8 := e8 * m5
+
+								c0 := d0 + d1
+								c1 := d0 - d1
+								c2 := d2 - d3
+								c3 := d3
+								c4 := d4 + d8
+								c5 := d5 + d7
+								c6 := d6 - d8
+								c7 := d7
+								c8 := c5 - c6
+
+								b0 := c0 + c3
+								b1 := c1 + c2
+								b2 := c1 - c2
+								b3 := c0 - c3
+								b4 := c4 - c8
+								b5 := c8
+								b6 := c6 - c7
+								b7 := c7
+
+								mcu[i * 8 + 0] = cast(i16)(b0 + b7)
+								mcu[i * 8 + 1] = cast(i16)(b1 + b6)
+								mcu[i * 8 + 2] = cast(i16)(b2 + b5)
+								mcu[i * 8 + 3] = cast(i16)(b3 + b4)
+								mcu[i * 8 + 4] = cast(i16)(b3 - b4)
+								mcu[i * 8 + 5] = cast(i16)(b2 - b5)
+								mcu[i * 8 + 6] = cast(i16)(b1 - b6)
+								mcu[i * 8 + 7] = cast(i16)(b0 - b7)
 							}
-
-							i += cast(int)amnt_zeros
-
-							if ac_coeff_len > 10 {
-								fmt.println("AC coefficient length greater than 10")
-							}
-
-							ac_coeff = cast(i16)read_bits_msb_from_memory(ctx, ac_coeff_len)
-							if ac_coeff < (1 << (ac_coeff_len - 1)) {
-								ac_coeff -= (1 << ac_coeff_len) - 1
-							}
-
-							mcu[zigzag[i]] = ac_coeff * cast(i16)quantization_table[i]
-						}
-					}
-
-					for c in 1..=img.channels {
-						c := cast(Component)c
-						mcu := &mcus[m][c]
-
-						for i in 0..<8 {
-							g0 := cast(f32)mcu[0 * 8 + i] * s0
-							g1 := cast(f32)mcu[4 * 8 + i] * s4
-							g2 := cast(f32)mcu[2 * 8 + i] * s2
-							g3 := cast(f32)mcu[6 * 8 + i] * s6
-							g4 := cast(f32)mcu[5 * 8 + i] * s5
-							g5 := cast(f32)mcu[1 * 8 + i] * s1
-							g6 := cast(f32)mcu[7 * 8 + i] * s7
-							g7 := cast(f32)mcu[3 * 8 + i] * s3
-
-							f4 := g4 - g7
-							f5 := g5 + g6
-							f6 := g5 - g6
-							f7 := g4 + g7
-
-							e0 := g0
-							e1 := g1
-							e2 := g2 - g3
-							e3 := g2 + g3
-							e4 := f4
-							e5 := f5 - f7
-							e6 := f6
-							e7 := f5 + f7
-							e8 := f4 + f6
-
-							d0 := e0
-							d1 := e1
-							d2 := e2 * m1
-							d3 := e3
-							d4 := e4 * m2
-							d5 := e5 * m3
-							d6 := e6 * m4
-							d7 := e7
-							d8 := e8 * m5
-
-							c0 := d0 + d1
-							c1 := d0 - d1
-							c2 := d2 - d3
-							c3 := d3
-							c4 := d4 + d8
-							c5 := d5 + d7
-							c6 := d6 - d8
-							c7 := d7
-							c8 := c5 - c6
-
-							b0 := c0 + c3
-							b1 := c1 + c2
-							b2 := c1 - c2
-							b3 := c0 - c3
-							b4 := c4 - c8
-							b5 := c8
-							b6 := c6 - c7
-							b7 := c7
-
-							mcu[0 * 8 + i] = cast(i16)(b0 + b7)
-							mcu[1 * 8 + i] = cast(i16)(b1 + b6)
-							mcu[2 * 8 + i] = cast(i16)(b2 + b5)
-							mcu[3 * 8 + i] = cast(i16)(b3 + b4)
-							mcu[4 * 8 + i] = cast(i16)(b3 - b4)
-							mcu[5 * 8 + i] = cast(i16)(b2 - b5)
-							mcu[6 * 8 + i] = cast(i16)(b1 - b6)
-							mcu[7 * 8 + i] = cast(i16)(b0 - b7)
 						}
 
-						for i in 0..<8 {
-							g0 := cast(f32)mcu[i * 8 + 0] * s0
-							g1 := cast(f32)mcu[i * 8 + 4] * s4
-							g2 := cast(f32)mcu[i * 8 + 2] * s2
-							g3 := cast(f32)mcu[i * 8 + 6] * s6
-							g4 := cast(f32)mcu[i * 8 + 5] * s5
-							g5 := cast(f32)mcu[i * 8 + 1] * s1
-							g6 := cast(f32)mcu[i * 8 + 7] * s7
-							g7 := cast(f32)mcu[i * 8 + 3] * s3
+						// Convert the YCbCr pixel data to RGB
+						for i in 0..<64 {
+							r := cast(i16)math.clamp(cast(f32)blocks[blk][.Y][i] + 1.402 * cast(f32)blocks[blk][.Cr][i] + 128, 0, 255)
+							g := cast(i16)math.clamp(cast(f32)blocks[blk][.Y][i] - 0.344 * cast(f32)blocks[blk][.Cb][i] - 0.714 * cast(f32)blocks[blk][.Cr][i] + 128, 0, 255)
+							b := cast(i16)math.clamp(cast(f32)blocks[blk][.Y][i] + 1.772 * cast(f32)blocks[blk][.Cb][i] + 128, 0, 255)
 
-							f4 := g4 - g7
-							f5 := g5 + g6
-							f6 := g5 - g6
-							f7 := g4 + g7
-
-							e0 := g0
-							e1 := g1
-							e2 := g2 - g3
-							e3 := g2 + g3
-							e4 := f4
-							e5 := f5 - f7
-							e6 := f6
-							e7 := f5 + f7
-							e8 := f4 + f6
-
-							d0 := e0
-							d1 := e1
-							d2 := e2 * m1
-							d3 := e3
-							d4 := e4 * m2
-							d5 := e5 * m3
-							d6 := e6 * m4
-							d7 := e7
-							d8 := e8 * m5
-
-							c0 := d0 + d1
-							c1 := d0 - d1
-							c2 := d2 - d3
-							c3 := d3
-							c4 := d4 + d8
-							c5 := d5 + d7
-							c6 := d6 - d8
-							c7 := d7
-							c8 := c5 - c6
-
-							b0 := c0 + c3
-							b1 := c1 + c2
-							b2 := c1 - c2
-							b3 := c0 - c3
-							b4 := c4 - c8
-							b5 := c8
-							b6 := c6 - c7
-							b7 := c7
-
-							mcu[i * 8 + 0] = cast(i16)(b0 + b7)
-							mcu[i * 8 + 1] = cast(i16)(b1 + b6)
-							mcu[i * 8 + 2] = cast(i16)(b2 + b5)
-							mcu[i * 8 + 3] = cast(i16)(b3 + b4)
-							mcu[i * 8 + 4] = cast(i16)(b3 - b4)
-							mcu[i * 8 + 5] = cast(i16)(b2 - b5)
-							mcu[i * 8 + 6] = cast(i16)(b1 - b6)
-							mcu[i * 8 + 7] = cast(i16)(b0 - b7)
+							blocks[blk][.Y][i] = r
+							blocks[blk][.Cb][i] = g
+							blocks[blk][.Cr][i] = b
 						}
-					}
-
-					for i in 0..<64 {
-						r := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] + 1.402 * cast(f32)mcus[m][.Cr][i] + 128, 0, 255)
-						g := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] - 0.344 * cast(f32)mcus[m][.Cb][i] - 0.714 * cast(f32)mcus[m][.Cr][i] + 128, 0, 255)
-						b := cast(i16)math.clamp(cast(f32)mcus[m][.Y][i] + 1.772 * cast(f32)mcus[m][.Cb][i] + 128, 0, 255)
-
-						mcus[m][.Y][i] = r
-						mcus[m][.Cb][i] = g
-						mcus[m][.Cr][i] = b
 					}
 				}
 
@@ -824,19 +854,19 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					for x in 0..<img.width {
 						mcu_col := x / 8
 						pixel_col := x % 8
-						mcu_idx := mcu_row * mcu_width + mcu_col
+						mcu_idx := mcu_row * block_width + mcu_col
 						pixel_idx := pixel_row * 8 + pixel_col
 
 
 						if img.channels == 3 {
 							out := mem.slice_data_cast([]image.RGB_Pixel, img.pixels.buf[:])
 							out[y * img.width + x] = {
-								cast(byte)mcus[mcu_idx][.Y][pixel_idx],
-								cast(byte)mcus[mcu_idx][.Cb][pixel_idx],
-								cast(byte)mcus[mcu_idx][.Cr][pixel_idx],
+								cast(byte)blocks[mcu_idx][.Y][pixel_idx],
+								cast(byte)blocks[mcu_idx][.Cb][pixel_idx],
+								cast(byte)blocks[mcu_idx][.Cr][pixel_idx],
 							}
 						} else {
-							img.pixels.buf[y * img.width + x] = cast(byte)mcus[mcu_idx][.Y][pixel_idx]
+							img.pixels.buf[y * img.width + x] = cast(byte)blocks[mcu_idx][.Y][pixel_idx]
 						}
 					}
 				}
