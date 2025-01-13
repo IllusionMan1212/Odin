@@ -449,7 +449,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .RST0..=.RST7: // Handled by the bit reader. These shouldn't appear outside the entropy coded stream.
 				// TODO: Return an error
 				panic("Encountered RSTn marker outside the entropy-coded stream")
-			case .SOF0: // Baseline sequential DCT
+			case .SOF0, .SOF1: // Baseline sequential DCT, and extended sequential DCT
 				assert(img.channels == 0, "Encountered more than one SOF0 marker")
 
 				// Length
@@ -463,6 +463,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				img.depth = cast(int)precision
 				img.channels = cast(int)components
 
+				// TODO: 12-bit precision is valid too.
 				if precision != 8 {
 					return img, .Invalid_Frame_Bit_Depth_Combo
 				}
@@ -505,6 +506,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					horizontal_sampling := h_v_factors >> 4
 					vertical_sampling := h_v_factors & 0xF
 
+					// TODO: spec says the range for the sampling factors is 1-4
+					// We only support 1,2 for now.
 					if horizontal_sampling < 1 || horizontal_sampling > 4 {
 						return img, .Invalid_Horizontal_Sampling_Factor
 					}
@@ -524,13 +527,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_idx)
 					assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
 				}
-			case .SOF1: // Extended sequential DCT
-				// This type of frame is the one that has 16 bit quantization tables
-				unimplemented("SOF1")
 			case .SOF2: // Progressive DCT
 				unimplemented("SOF2")
-			case .SOF9: // Extended sequential DCT, Arithmetic coding
-				unimplemented("SOF9")
 			case .SOF3: // Lossless (sequential)
 				// testimg_rgb.jpg
 				fallthrough
@@ -539,6 +537,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .SOF6: // Differential progressive DCT
 				fallthrough
 			case .SOF7: // Differential lossless (sequential)
+				fallthrough
+			case .SOF9: // Extended sequential DCT, Arithmetic coding
 				fallthrough
 			case .SOF10: // Progressive DCT, Arithmetic coding
 				fallthrough
