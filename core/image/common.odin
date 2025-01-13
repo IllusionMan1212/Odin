@@ -583,9 +583,6 @@ TGA_Info :: struct {
 */
 JFIF_Magic := [?]byte{0x4A, 0x46, 0x49, 0x46} // "JFIF"
 JFXX_Magic := [?]byte{0x4A, 0x46, 0x58, 0x58} // "JFXX"
-// Photoshop's Image Resource Block
-// https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/#50577409_46269
-IRB_Signature :: u32be(0x3842494D)
 
 JPEG_Error :: enum {
 	None = 0,
@@ -632,10 +629,6 @@ JFXX_Extension_Code :: enum u8 {
 	Thumbnail_JPEG = 0x10,
 	Thumbnail_1_Byte_Palette = 0x11,
 	Thumbnail_3_Byte_RGB = 0x13,
-}
-
-IRB_Id :: enum u16be {
-	IPTC_NAA = 0x0404
 }
 
 JPEG_Marker :: enum u8 {

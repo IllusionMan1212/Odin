@@ -338,66 +338,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				}
 			// case .APP1: // Exif metadata
 				// unimplemented("APP1")
-			case .APP13: // Photoshop metadata
-				/*
-				struct {
-					null-terminated string -> "Photoshop 3.0"
-					4 byte. signature -> "8BIM"
-					2 byte. Image Resource ID -> There's a table of the identifiers and what they signify
-					// The following depend on the Image Resource ID. This is for 0x0404
-					1 byte. length of metadata key
-					X byte. metadata key
-					4 byte. metadata value length
-					X byte. metadata value
-
-					should end here, we can subtract the length and check if it's >0. We'll assert if it isn't 0
-					at the end
-				}
-				*/
-				// https://help.accusoft.com/ImageGear/v17.2/Windows/DLL/topic756.html#hs-inthistopic-e9acc480-0bb1-460e-9ebe-b779895e6362
-				// https://www.adobe.com/devnet-apps/photoshop/fileformatashtml/#50577409_46269
-
-				length := (compress.read_data(ctx, u16be) or_return) - 2
-
-				// TODO: We assume the next 13 bytes are "Photoshop 3.0".
-				// We'll handle different APP13 identifiers as they come.
-				ident := compress.read_slice(ctx, 13) or_return
-				if string(ident) != "Photoshop 3.0" {
-					return img, .Unsupported_APP13_Identifier
-				}
-				NUL := compress.read_u8(ctx) or_return
-
-				sig := compress.read_data(ctx, u32be) or_return
-				if sig != image.IRB_Signature {
-					return img, .Invalid_IRB_Signature
-				}
-
-				irb_id := compress.read_data(ctx, image.IRB_Id) or_return
-
-				length -= cast(u16be)(len(ident) + 1 + size_of(sig) + size_of(irb_id))
-
-				switch irb_id {
-				case .IPTC_NAA:
-					for length > 0 {
-						resource_name_len := compress.read_u8(ctx) or_return
-						if resource_name_len == 0 {
-							// TODO: Skip a 0x00 byte which is supposed to be the string
-						}
-
-						resource_name := string(compress.read_slice(ctx, cast(int)resource_name_len) or_return)
-						resource_data_len := compress.read_data(ctx, u32be) or_return
-						resource_data := compress.read_slice(ctx, cast(int)resource_data_len) or_return
-
-						// TODO: CONTINUE FROM HERE. Parse the IPTC data. The spec(s) suck.
-
-						fmt.println("Resource name:", resource_name)
-						fmt.println("Resource data:", resource_data)
-
-						length -= cast(u16be)(1 + cast(u32be)resource_name_len + 4 + resource_data_len)
-					}
-				case:
-					unimplemented(fmt.tprintln("Image Resource ID:", irb_id))
-				}
 			case .COM:
 				// TODO: comments should probably be stored in metadata
 				length := (compress.read_data(ctx, u16be) or_return) - 2
