@@ -485,7 +485,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 					// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
 					// decoders handle them just fine. Should we support that too?
-					// TODO: while others that use CMYK have 2-digit IDs 67, 77, 89, 75 which are CMYK respectively (which is just ASCII)
+					// TODO: while others that use CMYK have 2-digit IDs 67, 77, 89, 75 which are CMYK respectively (ASCII)
+					// TODO: ffs even more weird ids. 82, 71, 66 which is RGB respectively (ASCII)
+					// why would you even compress RGB if the damn spec specifies YCbCr
 					if id < .Y || id > .Cr {
 						return img, .Image_Does_Not_Adhere_to_Spec
 					}
@@ -510,6 +512,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						return img, .Invalid_Vertical_Sampling_Factor
 					}
 
+					// TODO: check for something something factors <=10
+
 					quantization_table_idx := compress.read_u8(ctx) or_return
 
 					if quantization_table_idx < 0 || quantization_table_idx > 3 {
@@ -521,12 +525,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
 				}
 			case .SOF1: // Extended sequential DCT
+				// This type of frame is the one that has 16 bit quantization tables
 				unimplemented("SOF1")
 			case .SOF2: // Progressive DCT
 				unimplemented("SOF2")
 			case .SOF9: // Extended sequential DCT, Arithmetic coding
 				unimplemented("SOF9")
 			case .SOF3: // Lossless (sequential)
+				// testimg_rgb.jpg
 				fallthrough
 			case .SOF5: // Differential sequential DCT
 				fallthrough
@@ -543,6 +549,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .SOF14: // Differential progressive DCT, Arithmetic coding
 				fallthrough
 			case .SOF15: // Differential lossless (sequential), Arithmetic coding
+				fmt.println(marker)
 				return img, .Unsupported_Frame_Type
 			case .SOS:
 				if img.channels == 0 && img.depth == 0 && img.width == 0 && img.height == 0 {
