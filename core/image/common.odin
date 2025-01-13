@@ -701,6 +701,7 @@ JPEG_Marker :: enum u8 {
 JPEG_Info :: struct {
 	jfif_app0: Maybe(JFIF_APP0),
 	jfxx_app0: Maybe(JFXX_APP0),
+	comments: [dynamic]string,
 	//exif: Maybe(Exif),
 }
 

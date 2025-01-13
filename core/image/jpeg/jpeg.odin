@@ -5,7 +5,6 @@ import "core:compress"
 import "core:fmt"
 import "core:math"
 import "core:mem"
-import "core:os"
 import "core:image"
 import "core:slice"
 
@@ -210,7 +209,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	defer delete(mcus)
 
 	loop: for {
-		first := compress.read_u8(ctx) or_return
+		first = compress.read_u8(ctx) or_return
 		if first == 0xFF {
 			marker := cast(image.JPEG_Marker)compress.read_u8(ctx) or_return
 			#partial switch marker {
@@ -278,13 +277,17 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						// +1 for the NUL byte
 						thumbnail_len := length - (size_of(image.JFXX_Magic) + 1 + size_of(image.JFXX_Extension_Code))
 						thumbnail_jpeg := compress.read_slice(ctx, thumbnail_len) or_return
-						thumbnail_img, err := load_from_bytes(thumbnail_jpeg)
+						thumbnail_img, thumbnail_err := load_from_bytes(thumbnail_jpeg)
+						_ = thumbnail_img
+						// TODO: TEST WITH jfif-jfxx-thumbnail-olympus-d320l.jpg
+						// it currently out-of-bounds in the thumbnail because it has a non 1:1 H|V factor
+
 						// TODO: Implement jpeg decoding for the thumbnail
 						// Not sure how to handle the returned ^Image and freeing it considering we want the pixel data
 						// to exist after APP0 is processed.
 						// I guess we just copy the pixel data to `thumbnail` and disregard
 						// all the other information the jpeg-compressed thumbnail provides.
-						if err != nil {
+						if thumbnail_err != nil {
 							return img, .JPEG_Thumbnail_Decoding_Error
 						}
 
@@ -294,7 +297,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						y_thumbnail := compress.read_u8(ctx) or_return
 						pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice(ctx, cast(int)x_thumbnail * cast(int)y_thumbnail * 3) or_return)
 						// TODO: leak if we don't .return_metadata
-						thumbnail := make([]image.RGB_Pixel, cast(int)x_thumbnail * cast(int)y_thumbnail)
+						thumbnail = make([]image.RGB_Pixel, cast(int)x_thumbnail * cast(int)y_thumbnail)
 						copy(thumbnail, pixels)
 
 						if .return_metadata in options {
@@ -352,9 +355,16 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			// case .APP1: // Exif metadata
 				// unimplemented("APP1")
 			case .COM:
-				// TODO: comments should probably be stored in metadata
 				length := (compress.read_data(ctx, u16be) or_return) - 2
-				comment := compress.read_slice(ctx, cast(int)length) or_return
+				comment := string(compress.read_slice(ctx, cast(int)length) or_return)
+				if .return_metadata in options {
+					if info, ok := img.metadata.(^image.JPEG_Info); ok {
+						if info.comments == nil {
+							info.comments = make([dynamic]string, 0, 8, allocator)
+						}
+						append(&info.comments, comment)
+					}
+				}
 			case .DQT:
 				length := cast(int)(compress.read_data(ctx, u16be) or_return) - 2
 
@@ -433,7 +443,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				fmt.println("Got EOI")
 				break loop
 			case .DRI:
-				length := (compress.read_data(ctx, u16be) or_return) - 2
+				// Length
+				compress.read_data(ctx, u16be) or_return
 				restart_interval = compress.read_data(ctx, u16be) or_return
 			case .RST0..=.RST7: // Handled by the bit reader. These shouldn't appear outside the entropy coded stream.
 				// TODO: Return an error
@@ -441,7 +452,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .SOF0: // Baseline sequential DCT
 				assert(img.channels == 0, "Encountered more than one SOF0 marker")
 
-				length := (compress.read_data(ctx, u16be) or_return) - 2
+				// Length
+				compress.read_data(ctx, u16be) or_return
 				precision := compress.read_u8(ctx) or_return
 				height := compress.read_data(ctx, u16be) or_return
 				width := compress.read_data(ctx, u16be) or_return
@@ -463,15 +475,17 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					return img, .Invalid_Image_Dimensions
 				}
 
+				// TODO: Some JPEGs use CMYK as the color model which means there will be 4 components
 				if components != 1 && components != 3 {
 					return img, .Invalid_Number_Of_Channels
 				}
 
-				for i in 0..<components {
+				for _ in 0..<components {
 					id := cast(Component)compress.read_u8(ctx) or_return
 
 					// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
 					// decoders handle them just fine. Should we support that too?
+					// TODO: while others that use CMYK have 2-digit IDs 67, 77, 89, 75 which are CMYK respectively (which is just ASCII)
 					if id < .Y || id > .Cr {
 						return img, .Image_Does_Not_Adhere_to_Spec
 					}
@@ -535,13 +549,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					return img, .Encountered_SOS_Before_SOF
 				}
 
-				length := (compress.read_data(ctx, u16be) or_return) - 2
+				// Length
+				compress.read_data(ctx, u16be) or_return
 				num_components := compress.read_u8(ctx) or_return
 				if num_components != 1 && num_components != 3 {
 					return img, .Invalid_Number_Of_Channels
 				}
 
-				for i in 0..<num_components {
+				for _ in 0..<num_components {
 					component_id := cast(Component)compress.read_u8(ctx) or_return
 					if component_id < .Y || component_id > .Cr {
 						return img, .Image_Does_Not_Adhere_to_Spec
@@ -561,8 +576,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				}
 				// TODO: These aren't used for sequential DCT, only progressive and lossless.
 				Ss := compress.read_u8(ctx) or_return
+				_ = Ss
 				Se := compress.read_u8(ctx) or_return
+				_ = Se
 				Ah_Al := compress.read_u8(ctx) or_return
+				_ = Ah_Al
 				//fmt.println("Ss:", Ss)
 				//fmt.println("Se:", Se)
 				//fmt.println("Ah Al:", Ah_Al)
@@ -838,10 +856,10 @@ destroy :: proc(img: ^Image) {
 	bytes.buffer_destroy(&img.pixels)
 
 	if v, ok := img.metadata.(^image.JPEG_Info); ok {
-		if jfxx, ok := v.jfxx_app0.?; ok {
+		if jfxx, jfxx_ok := v.jfxx_app0.?; jfxx_ok {
 			delete(jfxx.thumbnail)
 		}
-		if jfif, ok := v.jfif_app0.?; ok {
+		if jfif, jfif_ok := v.jfif_app0.?; jfif_ok {
 			delete(jfif.thumbnail)
 		}
 		free(v)
