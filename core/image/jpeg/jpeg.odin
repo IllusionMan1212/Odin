@@ -87,8 +87,16 @@ refill_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, 
 			if len(z.input_data) > 1 {
 				next := u64(z.input_data[1])
 
-				if b == 0xFF && next == 0x00 {
-					z.input_data = z.input_data[2:]
+				if b == 0xFF {
+					if next == 0x00 {
+						// 0x00 is used as a stuffing to indicate that the 0xFF is part of the data and not
+						// the beginning of a marker
+						z.input_data = z.input_data[2:]
+					} else if next >= cast(u64)image.JPEG_Marker.RST0 && next <= cast(u64)image.JPEG_Marker.RST7 {
+						// Skip any RSTn markers if we encounter them
+						b = u64(z.input_data[2])
+						z.input_data = z.input_data[3:]
+					}
 				} else {
 					z.input_data = z.input_data[1:]
 				}
@@ -113,6 +121,11 @@ refill_msb :: proc{refill_msb_from_memory}
 consume_bits_msb_from_memory :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8) {
 	z.code_buffer <<= width
 	z.num_bits -= u64(width)
+}
+
+byte_align :: #force_inline proc(z: ^compress.Context_Memory_Input) {
+	skip := z.num_bits % 8
+	consume_bits_msb(z, cast(u8)skip)
 }
 
 consume_bits_msb :: proc{consume_bits_msb_from_memory}
@@ -422,12 +435,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .DRI:
 				length := (compress.read_data(ctx, u16be) or_return) - 2
 				restart_interval = compress.read_data(ctx, u16be) or_return
-				fmt.println("Restart Interval is:", restart_interval)
-				// TODO: fix
-				assert(restart_interval == 0, "Non-zero restart interval. We don't handle those")
-			case .RST0..=.RST7:
-				// TODO: These are parameter-less markers. i.e. No length, No value. Just a marker.
-				unimplemented(fmt.tprint("%v marker", marker))
+			case .RST0..=.RST7: // Handled by the bit reader. These shouldn't appear outside the entropy coded stream.
+				// TODO: Return an error
+				panic("Encountered RSTn marker outside the entropy-coded stream")
 			case .SOF0: // Baseline sequential DCT
 				assert(img.channels == 0, "Encountered more than one SOF0 marker")
 
@@ -567,7 +577,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				fmt.println("MCU count:", mcu_count)
 
 				for m in 0..<mcu_count {
-				component_loop: for c in 1..=img.channels {
+					if restart_interval != 0 && m % cast(int)restart_interval == 0 {
+						previous_dc[.Y] = 0
+						previous_dc[.Cb] = 0
+						previous_dc[.Cr] = 0
+						byte_align(ctx)
+					}
+					component_loop:
+					for c in 1..=img.channels {
 						c := cast(Component)c
 						mcu := &mcus[m][c]
 						dc_table := huffman[.DC][color_components[c].dc_table_idx]
