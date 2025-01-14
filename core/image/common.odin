@@ -143,9 +143,9 @@ Option :: enum {
 	do_not_decompress_image,
 	return_header,
 	return_metadata,
-	alpha_add_if_missing,          // Ignored for QOI. Always returns RGBA8.
-	alpha_drop_if_present,         // Unimplemented for QOI. Returns error.
-	alpha_premultiply,             // Unimplemented for QOI. Returns error.
+	alpha_add_if_missing,          // Ignored for QOI. Always returns RGBA8. Ignored for JPEG.
+	alpha_drop_if_present,         // Unimplemented for QOI. Returns error. Ignored for JPEG.
+	alpha_premultiply,             // Unimplemented for QOI. Returns error. Ignored for JPEG.
 	blend_background,              // Ignored for non-PNG formats
 
 	// Unimplemented
@@ -589,7 +589,6 @@ JPEG_Error :: enum {
 	Duplicate_SOI_Marker,
 	Invalid_JFXX_Extension_Code,
 	Encountered_SOS_Before_SOF,
-	JPEG_Thumbnail_Decoding_Error,
 	Invalid_Quantization_Table_Precision,
 	Invalid_Quantization_Table_Index,
 	Invalid_Huffman_Coefficient_Type,
@@ -619,9 +618,9 @@ JFIF_APP0 :: struct {
 
 JFXX_APP0 :: struct {
 	extension_code: JFXX_Extension_Code,
-	x_thumbnail: byte,
-	y_thumbnail: byte,
-	thumbnail: []RGB_Pixel `fmt:"-"`,
+	x_thumbnail: int,
+	y_thumbnail: int,
+	thumbnail: []byte `fmt:"-"`,
 }
 
 JFXX_Extension_Code :: enum u8 {

@@ -181,7 +181,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	s6 := math.cos_f32(6.0 / 16.0 * math.PI) / 2.0
 	s7 := math.cos_f32(7.0 / 16.0 * math.PI) / 2.0
 
-	// TODO: make sure to handle all the supported options
+	// TODO: make sure to handle all the supported options. especially the .do_not_decompress_image option
 	if .info in options {
 		options += {.return_metadata, .do_not_decompress_image}
 		options -= {.info}
@@ -267,40 +267,43 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				} else if slice.equal(ident[:], image.JFXX_Magic[:]) {
 					extension_code := cast(image.JFXX_Extension_Code)compress.read_u8(ctx) or_return
-					// TODO: the thumbnail can be greyscale afaik. setting the type to []RGB_Pixel is le bad.
-					// Ideally we'd have it be []byte and we'd specify if its RGB or greyscale. The JFXX_APP0
-					// thumbnail member has to also be changed to fit this, we should also add an enum member to specify
-					// how many channels it has (or just a is_RGB boolean member or something)
-					//
-					// JFIF_APP0's thumbnail member type MUST NOT be changed because it's always RGB.
-					thumbnail: []image.RGB_Pixel
+					thumbnail: []byte
 
 					switch extension_code {
+					// We return the raw JPEG-compressed bytes for this type of thumbnail.
+					// It's up to the user if they want to decode it by checking the extension code
+					// and calling image.load() on the thumbnail.
+					// Not sure where to document that though, maybe it's better if the thumbnail is always raw pixel data.
 					case .Thumbnail_JPEG:
 						// +1 for the NUL byte
 						thumbnail_len := length - (size_of(image.JFXX_Magic) + 1 + size_of(image.JFXX_Extension_Code))
 						thumbnail_jpeg := compress.read_slice(ctx, thumbnail_len) or_return
-						thumbnail_img, thumbnail_err := load_from_bytes(thumbnail_jpeg)
-						_ = thumbnail_img
-						// TODO: TEST WITH jfif-jfxx-thumbnail-olympus-d320l.jpg
-						// it currently out-of-bounds in the thumbnail because it has a non 1:1 H|V factor
+						// TODO: we leak if we don't .return_metadata
+						thumbnail = make([]byte, thumbnail_len)
+						copy(thumbnail, thumbnail_jpeg)
 
-						// TODO: Implement jpeg decoding for the thumbnail
-						// Not sure how to handle the returned ^Image and freeing it considering we want the pixel data
-						// to exist after APP0 is processed.
-						// I guess we just copy the pixel data to `thumbnail` and disregard
-						// all the other information the jpeg-compressed thumbnail provides.
-						if thumbnail_err != nil {
-							return img, .JPEG_Thumbnail_Decoding_Error
+						// TODO: this is dog. do better.
+						if .return_metadata in options {
+							info: ^image.JPEG_Info
+							if img.metadata == nil {
+								info = new(image.JPEG_Info)
+							} else {
+								info = img.metadata.(^image.JPEG_Info)
+							}
+							info.jfxx_app0 = image.JFXX_APP0{
+								extension_code,
+								0,
+								0,
+								thumbnail,
+							}
+							img.metadata = info
 						}
-
-						unimplemented(fmt.tprintf("%v", extension_code))
 					case .Thumbnail_3_Byte_RGB:
-						x_thumbnail := compress.read_u8(ctx) or_return
-						y_thumbnail := compress.read_u8(ctx) or_return
-						pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice(ctx, cast(int)x_thumbnail * cast(int)y_thumbnail * 3) or_return)
-						// TODO: leak if we don't .return_metadata
-						thumbnail = make([]image.RGB_Pixel, cast(int)x_thumbnail * cast(int)y_thumbnail)
+						x_thumbnail := cast(int)compress.read_u8(ctx) or_return
+						y_thumbnail := cast(int)compress.read_u8(ctx) or_return
+						pixels := compress.read_slice(ctx, x_thumbnail * y_thumbnail * 3) or_return
+						// TODO: we leak if we don't .return_metadata
+						thumbnail = make([]byte, x_thumbnail * y_thumbnail * 3)
 						copy(thumbnail, pixels)
 
 						if .return_metadata in options {
@@ -320,11 +323,12 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						}
 					case .Thumbnail_1_Byte_Palette:
 						panic("Got a 1 byte palette JFXX thumbnail. Test to see if the dumped data is correct using imagemagick\n`display -size WxH -depth 8 RGB:image.file`")
-						//x_thumbnail := compress.read_u8(ctx) or_return
-						//y_thumbnail := compress.read_u8(ctx) or_return
+						//x_thumbnail := cast(int)compress.read_u8(ctx) or_return
+						//y_thumbnail := cast(int)compress.read_u8(ctx) or_return
 						//palette := slice.reinterpret([]image.RGB_Pixel, compress.read_slice(ctx, 768) or_return)
-						//old_pixels := compress.read_slice(ctx, cast(int)x_thumbnail * cast(int)y_thumbnail) or_return
+						//old_pixels := compress.read_slice(ctx, x_thumbnail * y_thumbnail) or_return
 						// TODO: leak if we don't .return_metadata
+						// TODO: needs fixing for the new []byte type that thumbnail has.
 						//pixels := make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
 
 						//for i in 0..<x_thumbnail*y_thumbnail {
