@@ -7,6 +7,7 @@ import "core:math"
 import "core:mem"
 import "core:image"
 import "core:slice"
+import "core:strings"
 
 Image :: image.Image
 Error :: image.Error
@@ -369,7 +370,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						if info.comments == nil {
 							info.comments = make([dynamic]string, 0, 8, allocator)
 						}
-						append(&info.comments, comment)
+						append(&info.comments, strings.clone(comment))
 					}
 				}
 			case .DQT:
