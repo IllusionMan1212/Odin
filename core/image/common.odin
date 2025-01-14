@@ -596,8 +596,7 @@ JPEG_Error :: enum {
 	Invalid_Huffman_Table_Index,
 	Unsupported_Frame_Type,
 	Invalid_Frame_Bit_Depth_Combo,
-	Invalid_Horizontal_Sampling_Factor,
-	Invalid_Vertical_Sampling_Factor,
+	Invalid_Sampling_Factor,
 	Unsupported_APP13_Identifier,
 	Invalid_IRB_Signature,
 }

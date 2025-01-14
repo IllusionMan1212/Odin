@@ -38,6 +38,8 @@ ColorComponent :: struct {
 	dc_table_idx: u8,
 	ac_table_idx: u8,
 	quantization_table_idx: u8,
+	v_sampling_factor: int,
+	h_sampling_factor: int,
 }
 
 Block :: [Component][64]i16
@@ -201,13 +203,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	huffman: [Coefficient][4]HuffmanTable
 	quantization: [4]QuantizationTable
 	color_components: [Component]ColorComponent
-	restart_interval: u16be
+	restart_interval: int
 	mcu_width: int
 	mcu_height: int
 	block_width: int
 	block_height: int
-	horizontal_sampling_factor: u8
-	vertical_sampling_factor: u8
 	blocks: []Block
 	defer delete(blocks)
 
@@ -448,11 +448,12 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .DRI:
 				// Length
 				compress.read_data(ctx, u16be) or_return
-				restart_interval = compress.read_data(ctx, u16be) or_return
+				restart_interval = cast(int)compress.read_data(ctx, u16be) or_return
 			case .RST0..=.RST7: // Handled by the bit reader. These shouldn't appear outside the entropy coded stream.
 				// TODO: Return an error
 				panic("Encountered RSTn marker outside the entropy-coded stream")
 			case .SOF0, .SOF1: // Baseline sequential DCT, and extended sequential DCT
+				// TODO: should probably be an error
 				assert(img.channels == 0, "Encountered more than one SOFn marker")
 
 				// Length
@@ -466,7 +467,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				img.depth = cast(int)precision
 				img.channels = cast(int)components
 
-				// TODO: 12-bit precision is valid too.
+				// TODO: 12-bit precision is valid too but we don't support it.
 				if precision != 8 {
 					return img, .Invalid_Frame_Bit_Depth_Combo
 				}
@@ -498,18 +499,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					// TODO: ffs even more weird ids. 82, 71, 66 which is RGB respectively (ASCII)
 					// why would you even compress RGB if the damn spec specifies YCbCr
 					if id < .Y || id > .Cr {
+						fmt.println("Found unknown component ID:", id)
 						return img, .Image_Does_Not_Adhere_to_Spec
 					}
 
-					// high 4 is H, low 4 is V
-					// The H and V sampling factors dictate the final size of the component they are associated with.
-					// For instance, the color space defaults to YCbCr and the H and V sampling factors for each component,
-					// Y, Cb, and Cr, default to 2, 1, and 1, respectively (2 for both H and V of the Y component, etc.)
-					// in the Jpeg-6a library by the Independent Jpeg Group. While this does mean that the Y component
-					// will be twice the size of the other two components--giving it a higher resolution, the lower resolution
-					// components are quartered in size during compression in order to achieve this difference.
-					// Thus, the Cb and Cr components must be quadrupled in size during decompression
-					// https://www.geocities.ws/crestwoodsdd/JPEG.htm
 					h_v_factors := compress.read_u8(ctx) or_return
 					horizontal_sampling := h_v_factors >> 4
 					vertical_sampling := h_v_factors & 0xF
@@ -517,10 +510,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					// TODO: spec says the range for the sampling factors is 1-4
 					// We only support 1,2 for now.
 					if horizontal_sampling < 1 || horizontal_sampling > 2 {
-						return img, .Invalid_Horizontal_Sampling_Factor
+						return img, .Invalid_Sampling_Factor
 					}
 					if vertical_sampling < 1 || vertical_sampling > 2 {
-						return img, .Invalid_Vertical_Sampling_Factor
+						return img, .Invalid_Sampling_Factor
 					}
 
 					if id == .Y {
@@ -530,9 +523,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						if vertical_sampling == 2 && mcu_height % 2 == 1 {
 							block_height += 1
 						}
-
-						horizontal_sampling_factor = horizontal_sampling
-						vertical_sampling_factor = vertical_sampling
+					} else {
+						if horizontal_sampling != 1 && vertical_sampling != 1 {
+							return img, .Invalid_Sampling_Factor
+						}
 					}
 
 					// TODO: check for something something factors <=10
@@ -544,8 +538,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 
 					color_components[id].quantization_table_idx = quantization_table_idx
-					fmt.printfln("Id: %v, H|V: %v, Quantization table: %v", id, h_v_factors, quantization_table_idx)
-					//assert(h_v_factors == 17, "H V factors aren't 1:1. We don't support others for now")
+					color_components[id].v_sampling_factor = cast(int)vertical_sampling
+					color_components[id].h_sampling_factor = cast(int)horizontal_sampling
 				}
 			case .SOF2: // Progressive DCT
 				unimplemented("SOF2")
@@ -616,34 +610,23 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 				previous_dc: [Component]i16
 
-				fmt.println("Block height:", block_height)
-				fmt.println("Block width:", block_width)
-				fmt.println("MCU height:", mcu_height)
-				fmt.println("MCU width:", mcu_width)
-				fmt.println("Sampling Factor H:", horizontal_sampling_factor)
-				fmt.println("Sampling Factor V:", vertical_sampling_factor)
-
-				// TODO: CONTINUE FROM HERE.
-				// Subsampling "works" (still missing something from the video when it comes to converting from YCbCr to RGB)
-				// for a small 8x8 gimp-made image, but we're still getting the out-of-bounds error for the goldfish_2to1.jpg
-				// file. The goldfish vertical only or horizontal only files don't have an out of bounds but they don't render
-				// correctly.
-				for y := 0; y < mcu_height; y += cast(int)vertical_sampling_factor {
-					for x := 0; x < mcu_width; x += cast(int)horizontal_sampling_factor {
+				restart_interval *= color_components[.Y].v_sampling_factor * color_components[.Y].h_sampling_factor
+				#no_bounds_check for y := 0; y < mcu_height; y += color_components[.Y].v_sampling_factor {
+					for x := 0; x < mcu_width; x += color_components[.Y].h_sampling_factor {
 						blk := y * block_width + x
 
-						if restart_interval != 0 && blk % cast(int)restart_interval == 0 {
+						if restart_interval != 0 && blk % restart_interval == 0 {
 							previous_dc[.Y] = 0
 							previous_dc[.Cb] = 0
 							previous_dc[.Cr] = 0
 							byte_align(ctx)
 						}
-						component_loop:
 						for c in 1..=img.channels {
-							for v in 0..<vertical_sampling_factor {
-								for h in 0..<horizontal_sampling_factor {
-									c := cast(Component)c
-									mcu := &blocks[(y + cast(int)v) * block_width + (cast(int)h + x)][c]
+							c := cast(Component)c
+							for v in 0..<color_components[c].v_sampling_factor {
+							h_loop:
+								for h in 0..<color_components[c].h_sampling_factor {
+									mcu := &blocks[(y + v) * block_width + (h + x)][c]
 									dc_table := huffman[.DC][color_components[c].dc_table_idx]
 									ac_table := huffman[.AC][color_components[c].ac_table_idx]
 									quantization_table := quantization[color_components[c].quantization_table_idx]
@@ -670,7 +653,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 										// Special symbol used to indicate
 										// that the rest of the MCU is filled with 0s
 										if symbol == 0x00 {
-											continue component_loop
+											continue h_loop
 										}
 
 										amnt_zeros := symbol >> 4
@@ -678,7 +661,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 										ac_coeff: i16 = 0
 
 										if i + cast(int)amnt_zeros >= 64 {
-											fmt.println("Zero run-length exceeded MCU")
+											return img, .Corrupt
 										}
 
 										i += cast(int)amnt_zeros
@@ -700,146 +683,163 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 						for c in 1..=img.channels {
 							c := cast(Component)c
-							mcu := &blocks[blk][c]
 
-							for i in 0..<8 {
-								g0 := cast(f32)mcu[0 * 8 + i] * s0
-								g1 := cast(f32)mcu[4 * 8 + i] * s4
-								g2 := cast(f32)mcu[2 * 8 + i] * s2
-								g3 := cast(f32)mcu[6 * 8 + i] * s6
-								g4 := cast(f32)mcu[5 * 8 + i] * s5
-								g5 := cast(f32)mcu[1 * 8 + i] * s1
-								g6 := cast(f32)mcu[7 * 8 + i] * s7
-								g7 := cast(f32)mcu[3 * 8 + i] * s3
+							for v := 0; v < color_components[c].v_sampling_factor; v += 1 {
+								for h := 0; h < color_components[c].h_sampling_factor; h += 1 {
+									mcu := &blocks[(y + v) * block_width + (x + h)][c]
+									for i in 0..<8 {
+										g0 := cast(f32)mcu[0 * 8 + i] * s0
+										g1 := cast(f32)mcu[4 * 8 + i] * s4
+										g2 := cast(f32)mcu[2 * 8 + i] * s2
+										g3 := cast(f32)mcu[6 * 8 + i] * s6
+										g4 := cast(f32)mcu[5 * 8 + i] * s5
+										g5 := cast(f32)mcu[1 * 8 + i] * s1
+										g6 := cast(f32)mcu[7 * 8 + i] * s7
+										g7 := cast(f32)mcu[3 * 8 + i] * s3
 
-								f4 := g4 - g7
-								f5 := g5 + g6
-								f6 := g5 - g6
-								f7 := g4 + g7
+										f4 := g4 - g7
+										f5 := g5 + g6
+										f6 := g5 - g6
+										f7 := g4 + g7
 
-								e0 := g0
-								e1 := g1
-								e2 := g2 - g3
-								e3 := g2 + g3
-								e4 := f4
-								e5 := f5 - f7
-								e6 := f6
-								e7 := f5 + f7
-								e8 := f4 + f6
+										e0 := g0
+										e1 := g1
+										e2 := g2 - g3
+										e3 := g2 + g3
+										e4 := f4
+										e5 := f5 - f7
+										e6 := f6
+										e7 := f5 + f7
+										e8 := f4 + f6
 
-								d0 := e0
-								d1 := e1
-								d2 := e2 * m1
-								d3 := e3
-								d4 := e4 * m2
-								d5 := e5 * m3
-								d6 := e6 * m4
-								d7 := e7
-								d8 := e8 * m5
+										d0 := e0
+										d1 := e1
+										d2 := e2 * m1
+										d3 := e3
+										d4 := e4 * m2
+										d5 := e5 * m3
+										d6 := e6 * m4
+										d7 := e7
+										d8 := e8 * m5
 
-								c0 := d0 + d1
-								c1 := d0 - d1
-								c2 := d2 - d3
-								c3 := d3
-								c4 := d4 + d8
-								c5 := d5 + d7
-								c6 := d6 - d8
-								c7 := d7
-								c8 := c5 - c6
+										c0 := d0 + d1
+										c1 := d0 - d1
+										c2 := d2 - d3
+										c3 := d3
+										c4 := d4 + d8
+										c5 := d5 + d7
+										c6 := d6 - d8
+										c7 := d7
+										c8 := c5 - c6
 
-								b0 := c0 + c3
-								b1 := c1 + c2
-								b2 := c1 - c2
-								b3 := c0 - c3
-								b4 := c4 - c8
-								b5 := c8
-								b6 := c6 - c7
-								b7 := c7
+										b0 := c0 + c3
+										b1 := c1 + c2
+										b2 := c1 - c2
+										b3 := c0 - c3
+										b4 := c4 - c8
+										b5 := c8
+										b6 := c6 - c7
+										b7 := c7
 
-								mcu[0 * 8 + i] = cast(i16)(b0 + b7)
-								mcu[1 * 8 + i] = cast(i16)(b1 + b6)
-								mcu[2 * 8 + i] = cast(i16)(b2 + b5)
-								mcu[3 * 8 + i] = cast(i16)(b3 + b4)
-								mcu[4 * 8 + i] = cast(i16)(b3 - b4)
-								mcu[5 * 8 + i] = cast(i16)(b2 - b5)
-								mcu[6 * 8 + i] = cast(i16)(b1 - b6)
-								mcu[7 * 8 + i] = cast(i16)(b0 - b7)
-							}
+										mcu[0 * 8 + i] = cast(i16)(b0 + b7)
+										mcu[1 * 8 + i] = cast(i16)(b1 + b6)
+										mcu[2 * 8 + i] = cast(i16)(b2 + b5)
+										mcu[3 * 8 + i] = cast(i16)(b3 + b4)
+										mcu[4 * 8 + i] = cast(i16)(b3 - b4)
+										mcu[5 * 8 + i] = cast(i16)(b2 - b5)
+										mcu[6 * 8 + i] = cast(i16)(b1 - b6)
+										mcu[7 * 8 + i] = cast(i16)(b0 - b7)
+									}
 
-							for i in 0..<8 {
-								g0 := cast(f32)mcu[i * 8 + 0] * s0
-								g1 := cast(f32)mcu[i * 8 + 4] * s4
-								g2 := cast(f32)mcu[i * 8 + 2] * s2
-								g3 := cast(f32)mcu[i * 8 + 6] * s6
-								g4 := cast(f32)mcu[i * 8 + 5] * s5
-								g5 := cast(f32)mcu[i * 8 + 1] * s1
-								g6 := cast(f32)mcu[i * 8 + 7] * s7
-								g7 := cast(f32)mcu[i * 8 + 3] * s3
+									for i in 0..<8 {
+										g0 := cast(f32)mcu[i * 8 + 0] * s0
+										g1 := cast(f32)mcu[i * 8 + 4] * s4
+										g2 := cast(f32)mcu[i * 8 + 2] * s2
+										g3 := cast(f32)mcu[i * 8 + 6] * s6
+										g4 := cast(f32)mcu[i * 8 + 5] * s5
+										g5 := cast(f32)mcu[i * 8 + 1] * s1
+										g6 := cast(f32)mcu[i * 8 + 7] * s7
+										g7 := cast(f32)mcu[i * 8 + 3] * s3
 
-								f4 := g4 - g7
-								f5 := g5 + g6
-								f6 := g5 - g6
-								f7 := g4 + g7
+										f4 := g4 - g7
+										f5 := g5 + g6
+										f6 := g5 - g6
+										f7 := g4 + g7
 
-								e0 := g0
-								e1 := g1
-								e2 := g2 - g3
-								e3 := g2 + g3
-								e4 := f4
-								e5 := f5 - f7
-								e6 := f6
-								e7 := f5 + f7
-								e8 := f4 + f6
+										e0 := g0
+										e1 := g1
+										e2 := g2 - g3
+										e3 := g2 + g3
+										e4 := f4
+										e5 := f5 - f7
+										e6 := f6
+										e7 := f5 + f7
+										e8 := f4 + f6
 
-								d0 := e0
-								d1 := e1
-								d2 := e2 * m1
-								d3 := e3
-								d4 := e4 * m2
-								d5 := e5 * m3
-								d6 := e6 * m4
-								d7 := e7
-								d8 := e8 * m5
+										d0 := e0
+										d1 := e1
+										d2 := e2 * m1
+										d3 := e3
+										d4 := e4 * m2
+										d5 := e5 * m3
+										d6 := e6 * m4
+										d7 := e7
+										d8 := e8 * m5
 
-								c0 := d0 + d1
-								c1 := d0 - d1
-								c2 := d2 - d3
-								c3 := d3
-								c4 := d4 + d8
-								c5 := d5 + d7
-								c6 := d6 - d8
-								c7 := d7
-								c8 := c5 - c6
+										c0 := d0 + d1
+										c1 := d0 - d1
+										c2 := d2 - d3
+										c3 := d3
+										c4 := d4 + d8
+										c5 := d5 + d7
+										c6 := d6 - d8
+										c7 := d7
+										c8 := c5 - c6
 
-								b0 := c0 + c3
-								b1 := c1 + c2
-								b2 := c1 - c2
-								b3 := c0 - c3
-								b4 := c4 - c8
-								b5 := c8
-								b6 := c6 - c7
-								b7 := c7
+										b0 := c0 + c3
+										b1 := c1 + c2
+										b2 := c1 - c2
+										b3 := c0 - c3
+										b4 := c4 - c8
+										b5 := c8
+										b6 := c6 - c7
+										b7 := c7
 
-								mcu[i * 8 + 0] = cast(i16)(b0 + b7)
-								mcu[i * 8 + 1] = cast(i16)(b1 + b6)
-								mcu[i * 8 + 2] = cast(i16)(b2 + b5)
-								mcu[i * 8 + 3] = cast(i16)(b3 + b4)
-								mcu[i * 8 + 4] = cast(i16)(b3 - b4)
-								mcu[i * 8 + 5] = cast(i16)(b2 - b5)
-								mcu[i * 8 + 6] = cast(i16)(b1 - b6)
-								mcu[i * 8 + 7] = cast(i16)(b0 - b7)
+										mcu[i * 8 + 0] = cast(i16)(b0 + b7)
+										mcu[i * 8 + 1] = cast(i16)(b1 + b6)
+										mcu[i * 8 + 2] = cast(i16)(b2 + b5)
+										mcu[i * 8 + 3] = cast(i16)(b3 + b4)
+										mcu[i * 8 + 4] = cast(i16)(b3 - b4)
+										mcu[i * 8 + 5] = cast(i16)(b2 - b5)
+										mcu[i * 8 + 6] = cast(i16)(b1 - b6)
+										mcu[i * 8 + 7] = cast(i16)(b0 - b7)
+									}
+								}
 							}
 						}
 
 						// Convert the YCbCr pixel data to RGB
-						for i in 0..<64 {
-							r := cast(i16)math.clamp(cast(f32)blocks[blk][.Y][i] + 1.402 * cast(f32)blocks[blk][.Cr][i] + 128, 0, 255)
-							g := cast(i16)math.clamp(cast(f32)blocks[blk][.Y][i] - 0.344 * cast(f32)blocks[blk][.Cb][i] - 0.714 * cast(f32)blocks[blk][.Cr][i] + 128, 0, 255)
-							b := cast(i16)math.clamp(cast(f32)blocks[blk][.Y][i] + 1.772 * cast(f32)blocks[blk][.Cb][i] + 128, 0, 255)
+						cbcr_blk := &blocks[y * block_width + x]
+						for v := color_components[.Y].v_sampling_factor - 1; v >= 0; v -= 1 {
+							for h := color_components[.Y].h_sampling_factor - 1; h >= 0; h -= 1 {
+								y_blk := &blocks[(y + v) * block_width + (x + h)]
+								for j := 7; j >= 0; j -= 1 {
+									for k := 7; k >= 0; k -= 1 {
+										i := j * 8 + k
+										cbcrPixelRow := j / color_components[.Y].v_sampling_factor + 4 * v;
+										cbcrPixelColumn := k / color_components[.Y].h_sampling_factor + 4 * h;
+										cbcrPixel := cbcrPixelRow * 8 + cbcrPixelColumn;
 
-							blocks[blk][.Y][i] = r
-							blocks[blk][.Cb][i] = g
-							blocks[blk][.Cr][i] = b
+										r := cast(i16)math.clamp(cast(f32)y_blk[.Y][i] + 1.402 * cast(f32)cbcr_blk[.Cr][cbcrPixel] + 128, 0, 255)
+										g := cast(i16)math.clamp(cast(f32)y_blk[.Y][i] - 0.344 * cast(f32)cbcr_blk[.Cb][cbcrPixel] - 0.714 * cast(f32)cbcr_blk[.Cr][cbcrPixel] + 128, 0, 255)
+										b := cast(i16)math.clamp(cast(f32)y_blk[.Y][i] + 1.772 * cast(f32)cbcr_blk[.Cb][cbcrPixel] + 128, 0, 255)
+
+										y_blk[.Y][i] = r
+										y_blk[.Cb][i] = g
+										y_blk[.Cr][i] = b
+									}
+								}
+							}
 						}
 					}
 				}
@@ -848,6 +848,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					return img, .Unable_To_Allocate_Or_Resize
 				}
 
+				out := mem.slice_data_cast([]image.RGB_Pixel, img.pixels.buf[:])
 				for y in 0..<img.height {
 					mcu_row := y / 8
 					pixel_row := y % 8
@@ -857,9 +858,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						mcu_idx := mcu_row * block_width + mcu_col
 						pixel_idx := pixel_row * 8 + pixel_col
 
-
 						if img.channels == 3 {
-							out := mem.slice_data_cast([]image.RGB_Pixel, img.pixels.buf[:])
 							out[y * img.width + x] = {
 								cast(byte)blocks[mcu_idx][.Y][pixel_idx],
 								cast(byte)blocks[mcu_idx][.Cb][pixel_idx],
@@ -899,6 +898,12 @@ destroy :: proc(img: ^Image) {
 		if jfif, jfif_ok := v.jfif_app0.?; jfif_ok {
 			delete(jfif.thumbnail)
 		}
+
+		for comment in v.comments {
+			delete(comment)
+		}
+		delete(v.comments)
+
 		free(v)
 	}
 	free(img)
