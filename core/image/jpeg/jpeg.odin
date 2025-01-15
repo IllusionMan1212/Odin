@@ -201,6 +201,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	img = new(Image)
 	img.which = .JPEG
 
+	expect_EOI := false
 	huffman: [Coefficient][4]HuffmanTable
 	quantization: [4]QuantizationTable
 	color_components: [Component]ColorComponent
@@ -216,6 +217,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 		first = compress.read_u8(ctx) or_return
 		if first == 0xFF {
 			marker := cast(image.JPEG_Marker)compress.read_u8(ctx) or_return
+			if expect_EOI && marker != .EOI {
+				return img, .Extra_Data_After_SOS
+			}
 			#partial switch marker {
 			case cast(image.JPEG_Marker)0xFF:
 				// If we encounter multiple FF then just skip them
@@ -445,21 +449,17 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				}
 			case .EOI:
-				// TODO: this is currently useless because we don't look for it when reading the Entropy Coded Stream
-				// and we keep reading bits until we either finish all MCUs or we reach end of file.
-				// Not sure what to do though.
-				fmt.println("Got EOI")
 				break loop
 			case .DRI:
 				// Length
 				compress.read_data(ctx, u16be) or_return
 				restart_interval = cast(int)compress.read_data(ctx, u16be) or_return
 			case .RST0..=.RST7: // Handled by the bit reader. These shouldn't appear outside the entropy coded stream.
-				// TODO: Return an error
-				panic("Encountered RSTn marker outside the entropy-coded stream")
+				return img, .Encountered_RST_Marker_Outside_ECS
 			case .SOF0, .SOF1: // Baseline sequential DCT, and extended sequential DCT
-				// TODO: should probably be an error
-				assert(img.channels == 0, "Encountered more than one SOFn marker")
+				if img.channels != 0 {
+					return img, .Multiple_SOS_Markers
+				}
 
 				// Length
 				compress.read_data(ctx, u16be) or_return
@@ -878,7 +878,7 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					}
 				}
 
-				break loop
+				expect_EOI = true
 			case .TEM:
 				// TEM doesn't have a length, continue to next marker
 			case:

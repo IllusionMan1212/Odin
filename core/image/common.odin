@@ -597,6 +597,9 @@ JPEG_Error :: enum {
 	Invalid_Frame_Bit_Depth_Combo,
 	Invalid_Sampling_Factor,
 	Unsupported_12_Bit_Depth,
+	Multiple_SOS_Markers,
+	Encountered_RST_Marker_Outside_ECS,
+	Extra_Data_After_SOS, // Image seemed to have decoded okay, but there's more data after SOS
 }
 
 JFIF_Unit :: enum byte {
