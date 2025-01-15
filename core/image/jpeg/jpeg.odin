@@ -128,12 +128,6 @@ read_bits_msb :: #force_inline proc(z: ^compress.Context_Memory_Input, width: u8
 	return k
 }
 
-// TODO: We could do something like png.odin where we return generic metadata about the
-// image and its pixel data but for more specific stuff (read: JFIF APP0, JFXX APP0, Application APP0) we provide
-// helper function that parse and read jpeg chunks (read: segments) and the user can extract that data themselves.
-// Not sure. TGA stores specific data in its *_Info struct, maybe because it doesn't have chunks/segments like PNG
-// and JPEG?
-
 load_from_bytes :: proc(data: []byte, options := Options{}, allocator := context.allocator) -> (img: ^Image, err: Error) {
 	ctx := &compress.Context_Memory_Input{
 		input_data = data,
@@ -247,28 +241,28 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 					if x_thumbnail * y_thumbnail != 0 {
 						thumb_pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice_from_memory(ctx, x_thumbnail * y_thumbnail * 3) or_return)
-						// TODO: this leaks if we don't have .return_metadata on
-						thumbnail = make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
-						copy(thumbnail, thumb_pixels)
-					}
 
-					if .return_metadata in options {
-						info: ^image.JPEG_Info
-						if img.metadata == nil {
-							info = new(image.JPEG_Info)
-						} else {
-							info = img.metadata.(^image.JPEG_Info)
+						if .return_metadata in options {
+							thumbnail = make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
+							copy(thumbnail, thumb_pixels)
+
+							info: ^image.JPEG_Info
+							if img.metadata == nil {
+								info = new(image.JPEG_Info)
+							} else {
+								info = img.metadata.(^image.JPEG_Info)
+							}
+							info.jfif_app0 = image.JFIF_APP0{
+								version,
+								units,
+								x_density,
+								y_density,
+								cast(u8)x_thumbnail,
+								cast(u8)y_thumbnail,
+								thumbnail,
+							}
+							img.metadata = info
 						}
-						info.jfif_app0 = image.JFIF_APP0{
-							version,
-							units,
-							x_density,
-							y_density,
-							cast(u8)x_thumbnail,
-							cast(u8)y_thumbnail,
-							thumbnail,
-						}
-						img.metadata = info
 					}
 				} else if slice.equal(ident[:], image.JFXX_Magic[:]) {
 					extension_code := cast(image.JFXX_Extension_Code)compress.read_u8(ctx) or_return
@@ -283,12 +277,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						// +1 for the NUL byte
 						thumbnail_len := length - (size_of(image.JFXX_Magic) + 1 + size_of(image.JFXX_Extension_Code))
 						thumbnail_jpeg := compress.read_slice(ctx, thumbnail_len) or_return
-						// TODO: we leak if we don't .return_metadata
-						thumbnail = make([]byte, thumbnail_len)
-						copy(thumbnail, thumbnail_jpeg)
 
-						// TODO: this is dog. do better.
 						if .return_metadata in options {
+							thumbnail = make([]byte, thumbnail_len)
+							copy(thumbnail, thumbnail_jpeg)
+
 							info: ^image.JPEG_Info
 							if img.metadata == nil {
 								info = new(image.JPEG_Info)
@@ -307,11 +300,11 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						x_thumbnail := cast(int)compress.read_u8(ctx) or_return
 						y_thumbnail := cast(int)compress.read_u8(ctx) or_return
 						pixels := compress.read_slice(ctx, x_thumbnail * y_thumbnail * 3) or_return
-						// TODO: we leak if we don't .return_metadata
-						thumbnail = make([]byte, x_thumbnail * y_thumbnail * 3)
-						copy(thumbnail, pixels)
 
 						if .return_metadata in options {
+							thumbnail = make([]byte, x_thumbnail * y_thumbnail * 3)
+							copy(thumbnail, pixels)
+
 							info: ^image.JPEG_Info
 							if img.metadata == nil {
 								info = new(image.JPEG_Info)
@@ -332,15 +325,14 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 						//y_thumbnail := cast(int)compress.read_u8(ctx) or_return
 						//palette := slice.reinterpret([]image.RGB_Pixel, compress.read_slice(ctx, 768) or_return)
 						//old_pixels := compress.read_slice(ctx, x_thumbnail * y_thumbnail) or_return
-						// TODO: leak if we don't .return_metadata
 						// TODO: needs fixing for the new []byte type that thumbnail has.
-						//pixels := make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
-
-						//for i in 0..<x_thumbnail*y_thumbnail {
-						//	pixels[i] = palette[old_pixels[i]]
-						//}
 
 						//if .return_metadata in options {
+						//	pixels := make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
+						//	for i in 0..<x_thumbnail*y_thumbnail {
+						//	  pixels[i] = palette[old_pixels[i]]
+						//	}
+
 						//	info: ^image.JPEG_Info
 						//	if img.metadata == nil {
 						//		info = new(image.JPEG_Info)
@@ -503,9 +495,8 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 
 					// TODO: some images write zero-based IDs for the components which violate the spec, but most (if not all)
 					// decoders handle them just fine. Should we support that too?
-					// TODO: while others that use CMYK have 2-digit IDs 67, 77, 89, 75 which are CMYK respectively (ASCII)
-					// TODO: ffs even more weird ids. 82, 71, 66 which is RGB respectively (ASCII)
-					// why would you even compress RGB if the damn spec specifies YCbCr
+					// TODO: while others that use CMYK have these IDs 67, 77, 89, 75 which are CMYK in ASCII
+					// TODO: even more weird ids. 82, 71, 66 which is RGB in ASCII
 					if id < .Y || id > .Cr {
 						fmt.println("Found unknown component ID:", id)
 						return img, .Image_Does_Not_Adhere_to_Spec
@@ -536,8 +527,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 							return img, .Invalid_Sampling_Factor
 						}
 					}
-
-					// TODO: check for something something factors <=10
 
 					quantization_table_idx := compress.read_u8(ctx) or_return
 
