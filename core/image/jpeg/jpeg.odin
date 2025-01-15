@@ -176,7 +176,6 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 	s6 := math.cos_f32(6.0 / 16.0 * math.PI) / 2.0
 	s7 := math.cos_f32(7.0 / 16.0 * math.PI) / 2.0
 
-	// TODO: make sure to handle all the supported options. especially the .do_not_decompress_image option
 	if .info in options {
 		options += {.return_metadata, .do_not_decompress_image}
 		options -= {.info}
@@ -573,6 +572,10 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 			case .SOS:
 				if img.channels == 0 && img.depth == 0 && img.width == 0 && img.height == 0 {
 					return img, .Encountered_SOS_Before_SOF
+				}
+
+				if .do_not_decompress_image in options {
+					return img, nil
 				}
 
 				// Length

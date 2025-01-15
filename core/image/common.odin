@@ -113,8 +113,7 @@ Image_Option:
 
 	`.alpha_drop_if_present`
 		If the image has an alpha channel, drop it.
-		You may want to use `.alpha_
-		tiply` in this case.
+		You may want to use `.alpha_premultiply` in this case.
 
 		NOTE: For PNG, this also skips handling of the tRNS chunk, if present,
 		unless you select `alpha_premultiply`.
