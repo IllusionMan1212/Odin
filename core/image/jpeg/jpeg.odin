@@ -240,7 +240,15 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 					thumbnail: []image.RGB_Pixel
 
 					if x_thumbnail * y_thumbnail != 0 {
-						thumb_pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice_from_memory(ctx, x_thumbnail * y_thumbnail * 3) or_return)
+						thumbnail_size := x_thumbnail * y_thumbnail * 3
+						// According to the JFIF spec, the thumbnail should always be made of RGB pixels.
+						// But some jpegs encode single-channel thumbnails.
+						if thumbnail_size != length - 14 && thumbnail_size / 3 == length - 14 {
+							thumbnail_size = x_thumbnail * y_thumbnail
+						} else {
+							return img, .Invalid_Thumbnail_Size
+						}
+						thumb_pixels := slice.reinterpret([]image.RGB_Pixel, compress.read_slice_from_memory(ctx, x_thumbnail * y_thumbnail) or_return)
 
 						if .return_metadata in options {
 							thumbnail = make([]image.RGB_Pixel, x_thumbnail * y_thumbnail)
