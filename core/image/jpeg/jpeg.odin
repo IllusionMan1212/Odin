@@ -473,6 +473,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 				img.channels = cast(int)components
 
 				// TODO: 12-bit precision is valid too but we don't support it.
+				if precision == 12 {
+					return img, .Unsupported_12_Bit_Depth
+				}
 				if precision != 8 {
 					return img, .Invalid_Frame_Bit_Depth_Combo
 				}
@@ -831,9 +834,9 @@ load_from_context :: proc(ctx: ^$C, options := Options{}, allocator := context.a
 								for j := 7; j >= 0; j -= 1 {
 									for k := 7; k >= 0; k -= 1 {
 										i := j * 8 + k
-										cbcrPixelRow := j / color_components[.Y].v_sampling_factor + 4 * v;
-										cbcrPixelColumn := k / color_components[.Y].h_sampling_factor + 4 * h;
-										cbcrPixel := cbcrPixelRow * 8 + cbcrPixelColumn;
+										cbcrPixelRow := j / color_components[.Y].v_sampling_factor + 4 * v
+										cbcrPixelColumn := k / color_components[.Y].h_sampling_factor + 4 * h
+										cbcrPixel := cbcrPixelRow * 8 + cbcrPixelColumn
 
 										r := cast(i16)math.clamp(cast(f32)y_blk[.Y][i] + 1.402 * cast(f32)cbcr_blk[.Cr][cbcrPixel] + 128, 0, 255)
 										g := cast(i16)math.clamp(cast(f32)y_blk[.Y][i] - 0.344 * cast(f32)cbcr_blk[.Cb][cbcrPixel] - 0.714 * cast(f32)cbcr_blk[.Cr][cbcrPixel] + 128, 0, 255)

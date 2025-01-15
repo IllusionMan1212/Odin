@@ -596,8 +596,7 @@ JPEG_Error :: enum {
 	Unsupported_Frame_Type,
 	Invalid_Frame_Bit_Depth_Combo,
 	Invalid_Sampling_Factor,
-	Unsupported_APP13_Identifier,
-	Invalid_IRB_Signature,
+	Unsupported_12_Bit_Depth,
 }
 
 JFIF_Unit :: enum byte {
