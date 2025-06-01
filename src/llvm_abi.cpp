@@ -1617,7 +1617,7 @@ namespace lbAbiArm32 {
 				args[i] = non_struct(c, t);
 			} else if (is_homogenous_aggregate(c, t, &homo_base_type, &homo_member_count)) {
 				if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
-					args[i] = lb_arg_type_direct(t, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
+					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), homo_member_count));
 				} else {
 					//args[i] = lb_arg_type_indirect(t, nullptr);
 					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), homo_member_count));
@@ -1630,14 +1630,9 @@ namespace lbAbiArm32 {
 				if (is_calling_convention_odin(calling_convention) && sz > 8) {
 					// Minor change to improve performance using the Odin calling conventions
 					args[i] = lb_arg_type_indirect(t, nullptr);
-				} else if (sz == 0) {
-					LLVMTypeRef cast_type = LLVMStructTypeInContext(c, nullptr, 0, false);
-					lb_arg_type_direct(t, cast_type, nullptr, nullptr);
 				} else if (a <= 4) {
 					unsigned n = cast(unsigned)((sz + 3) / 4);
 					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), n));
-					//LLVMTypeRef cast_type = LLVMIntTypeInContext(c, (sz*4));
-					//args[i] = lb_arg_type_direct(t);
 				} else {
 					unsigned n = cast(unsigned)((sz + 7) / 8);
 					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 64), n));
