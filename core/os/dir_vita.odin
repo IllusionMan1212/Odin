@@ -6,7 +6,7 @@ import "core:mem"
 import "base:runtime"
 import "core:sys/vita"
 
-read_dir :: proc(fd: Handle, n: int, allocator := context.allocator) -> (fi: []File_Info, err: Errno) {
-	err = ENOSYS
+read_dir :: proc(fd: Handle, n: int, allocator := context.allocator) -> (fi: []File_Info, err: Error) {
+	err = .ENOSYS
 	return
 }

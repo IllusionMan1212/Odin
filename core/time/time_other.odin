@@ -10,6 +10,7 @@
 #+build !windows
 #+build !orca
 #+build !haiku
+#+build !vita
 package time
 
 _IS_SUPPORTED :: false

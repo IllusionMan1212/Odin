@@ -4,16 +4,16 @@ package os
 import "core:sys/vita"
 import "core:time"
 
-lstat :: proc(name: string, allocator := context.allocator) -> (File_Info, Errno) {
-	return File_Info{}, ENOSYS
+lstat :: proc(name: string, allocator := context.allocator) -> (File_Info, Error) {
+	return File_Info{}, .ENOSYS
 }
 
-stat :: proc(name: string, allocator := context.allocator) -> (File_Info, Errno) {
-	return File_Info{}, ENOSYS
+stat :: proc(name: string, allocator := context.allocator) -> (File_Info, Error) {
+	return File_Info{}, .ENOSYS
 }
 
-fstat :: proc(fd: Handle, allocator := context.allocator) -> (fi: File_Info, errno: Errno) {
-	return fi, ENOSYS
+fstat :: proc(fd: Handle, allocator := context.allocator) -> (fi: File_Info, errno: Error) {
+	return fi, .ENOSYS
 	//stat: vita.SceIoStat
 	//ret := vita.sceIoGetstatByFd(vita.SceUID(fd), &stat)
 

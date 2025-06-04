@@ -6,7 +6,6 @@ import "core:strings"
 import vita "core:sys/vita"
 
 Handle :: distinct i32
-Errno :: distinct i32
 
 //dev_t :: u32 // ???
 //ino_t :: u16 // ???
@@ -42,8 +41,12 @@ Errno :: distinct i32
 
 INVALID_HANDLE :: ~Handle(0)
 
-ERROR_NONE: Errno: 0
-ENOSYS: Errno: -2147352573
+_Platform_Error :: enum {
+	// TODO:
+
+	// TODO: Might be 78. who knows
+	ENOSYS = 88
+}
 
 O_RDONLY    :: 0x0001                         //!< Read-only
 O_WRONLY    :: 0x0002                         //!< Write-only
@@ -81,18 +84,22 @@ is_path_separator :: proc(r: rune) -> bool {
 }
 
 // NOTE(illusion): mode has to be 0o777, otherwise sceIoOpen errors
-open :: proc(path: string, flags: int = O_RDONLY, mode: int = 0o777) -> (Handle, Errno) {
+open :: proc(path: string, flags: int = O_RDONLY, mode: int = 0o777) -> (Handle, Error) {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	cstr := strings.clone_to_cstring(path, context.temp_allocator)
 	handle := vita.sceIoOpen(cstr, cast(vita.SceIoMode)flags, auto_cast mode)
 	if handle < 0 {
-		return INVALID_HANDLE, auto_cast handle
+		return INVALID_HANDLE, Platform_Error(handle)
 	}
-	return Handle(handle), ERROR_NONE
+	return Handle(handle), nil
 }
 
-close :: proc(fd: Handle) -> Errno {
-	return auto_cast vita.sceIoClose(vita.SceUID(fd))
+close :: proc(fd: Handle) -> Error {
+	return Platform_Error(vita.sceIoClose(vita.SceUID(fd)))
+}
+
+flush :: proc(fd: Handle) -> Error {
+	return .ENOSYS
 }
 
 // If you read or write more than `SSIZE_MAX` bytes, result is implementation defined (probably an error).
@@ -104,77 +111,77 @@ close :: proc(fd: Handle) -> Errno {
 @(private)
 MAX_RW :: 1 << 30
 
-read :: proc(fd: Handle, data: []byte) -> (int, Errno) {
+read :: proc(fd: Handle, data: []byte) -> (int, Error) {
 	if len(data) == 0 {
-		return 0, ERROR_NONE
+		return 0, nil
 	}
 
 	to_read := min(uint(len(data)), MAX_RW)
 
 	bytes_read := vita.sceIoRead(vita.SceUID(fd), raw_data(data), auto_cast to_read)
 	if bytes_read < 0 {
-		return -1, auto_cast bytes_read
+		return -1, Platform_Error(bytes_read)
 	}
-	return auto_cast bytes_read, ERROR_NONE
+	return auto_cast bytes_read, nil
 }
 
-write :: proc(fd: Handle, data: []byte) -> (int, Errno) {
+write :: proc(fd: Handle, data: []byte) -> (int, Error) {
 	if len(data) == 0 {
-		return 0, ERROR_NONE
+		return 0, nil
 	}
 
 	to_write := min(uint(len(data)), MAX_RW)
 
 	bytes_written := vita.sceIoWrite(vita.SceUID(fd), raw_data(data), auto_cast to_write)
 	if bytes_written < 0 {
-		return -1, auto_cast bytes_written
+		return -1, Platform_Error(bytes_written)
 	}
-	return auto_cast bytes_written, ERROR_NONE
+	return auto_cast bytes_written, nil
 }
 
-read_at :: proc(fd: Handle, data: []byte, offset: i64) -> (int, Errno) {
+read_at :: proc(fd: Handle, data: []byte, offset: i64) -> (int, Error) {
 	if len(data) == 0 {
-		return 0, ERROR_NONE
+		return 0, nil
 	}
 
 	to_read := min(uint(len(data)), MAX_RW)
 
 	bytes_read := vita.sceIoPread(vita.SceUID(fd), raw_data(data), auto_cast to_read, auto_cast offset)
 	if bytes_read < 0 {
-		return -1, auto_cast bytes_read
+		return -1, Platform_Error(bytes_read)
 	}
-	return auto_cast bytes_read, ERROR_NONE
+	return auto_cast bytes_read, nil
 }
 
-write_at :: proc(fd: Handle, data: []byte, offset: i64) -> (int, Errno) {
+write_at :: proc(fd: Handle, data: []byte, offset: i64) -> (int, Error) {
 	if len(data) == 0 {
-		return 0, ERROR_NONE
+		return 0, nil
 	}
 
 	to_write := min(uint(len(data)), MAX_RW)
 
 	bytes_written := vita.sceIoPwrite(vita.SceUID(fd), raw_data(data), auto_cast to_write, auto_cast offset)
 	if bytes_written < 0 {
-		return -1, auto_cast bytes_written
+		return -1, Platform_Error(bytes_written)
 	}
-	return auto_cast bytes_written, ERROR_NONE
+	return auto_cast bytes_written, nil
 }
 
-seek :: proc(fd: Handle, offset: i64, whence: int) -> (i64, Errno) {
+seek :: proc(fd: Handle, offset: i64, whence: int) -> (i64, Error) {
 	res := vita.sceIoLseek(vita.SceUID(fd), auto_cast offset, auto_cast whence)
 	if res < 0 {
-		return -1, auto_cast res
+		return -1, Platform_Error(res)
 	}
-	return i64(res), ERROR_NONE
+	return i64(res), nil
 }
 
-file_size :: proc(fd: Handle) -> (i64, Errno) {
+file_size :: proc(fd: Handle) -> (i64, Error) {
 	s: vita.SceIoStat = ---
 	err := vita.sceIoGetstatByFd(vita.SceUID(fd), &s)
 	if err < 0 {
-		return -1, auto_cast err
+		return -1, Platform_Error(err)
 	}
-	return s.st_size, ERROR_NONE
+	return s.st_size, nil
 }
 
 @(private)
@@ -195,10 +202,10 @@ current_thread_id :: proc "contextless" () -> int {
 
 // NOTE(illusion): mode has to be 0o777, otherwise sceIoMkdir errors
 // NOTE(illusion): the vita implementation cannot recursively create directories and WILL fail if a parent dir doesn't exist.
-make_directory :: proc(path: string, mode: u32 = 0o777) -> Errno {
+make_directory :: proc(path: string, mode: u32 = 0o777) -> Error {
 	runtime.DEFAULT_TEMP_ALLOCATOR_TEMP_GUARD()
 	path_cstr := strings.clone_to_cstring(path, context.temp_allocator)
-	return Errno(vita.sceIoMkdir(path_cstr, vita.SceMode(mode)))
+	return Platform_Error(vita.sceIoMkdir(path_cstr, vita.SceMode(mode)))
 }
 
 exists :: proc(path: string) -> bool {
@@ -222,7 +229,7 @@ exists :: proc(path: string) -> bool {
 //	if result == -1 {
 //		return s, Errno(get_last_error())
 //	}
-//	return s, ERROR_NONE
+//	return s, nil
 //}
 //
 //@private
@@ -236,7 +243,7 @@ exists :: proc(path: string) -> bool {
 //	if res == -1 {
 //		return s, Errno(get_last_error())
 //	}
-//	return s, ERROR_NONE
+//	return s, nil
 //}
 //
 //@private
@@ -246,6 +253,6 @@ exists :: proc(path: string) -> bool {
 //	if result == -1 {
 //		return s, Errno(get_last_error())
 //	}
-//	return s, ERROR_NONE
+//	return s, nil
 //}
 

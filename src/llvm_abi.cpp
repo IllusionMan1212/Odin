@@ -1617,7 +1617,7 @@ namespace lbAbiArm32 {
 				args[i] = non_struct(c, t);
 			} else if (is_homogenous_aggregate(c, t, &homo_base_type, &homo_member_count)) {
 				if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
-					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), homo_member_count));
+					args[i] = lb_arg_type_direct(t, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
 				} else {
 					//args[i] = lb_arg_type_indirect(t, nullptr);
 					args[i] = lb_arg_type_direct(llvm_array_type(LLVMIntTypeInContext(c, 32), homo_member_count));
