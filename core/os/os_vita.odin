@@ -216,6 +216,10 @@ exists :: proc(path: string) -> bool {
 	return res == 0
 }
 
+lookup_env :: proc(key: string, allocator := context.allocator) -> (value: string, found: bool) {
+	return "", false
+}
+
 //get_last_error :: proc "contextless" () -> int {
 //	return int(__errno_location()^)
 //}
