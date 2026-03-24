@@ -1692,7 +1692,7 @@ namespace lbAbiArm32 {
 		for (unsigned i = 0; i < arg_count; i++) {
 			LLVMTypeRef t = arg_types[i];
 
-			LLVMTypeRef homo_base_type = {};
+			LLVMTypeRef homo_base_type = nullptr;
 			unsigned homo_member_count = 0;
 
 			if (is_register(t, false)) {
