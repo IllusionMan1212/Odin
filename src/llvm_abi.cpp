@@ -1697,17 +1697,14 @@ namespace lbAbiArm32 {
 
 			if (is_register(t, false)) {
 				args[i] = non_struct(c, t, false);
-			} else if (is_homogenous_aggregate(c, t, &homo_base_type, &homo_member_count)) {
+			} else if (is_homogenous_aggregate(c, t, &homo_base_type, &homo_member_count)
+				   && is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
 				// AAPCS32 Section 7.1.2: HFAs with 1-4 elements are VFP CPRCs,
 				// passed in consecutive VFP registers (Rule C.1.vfp).
-				// HFAs with >4 elements are not CPRCs and follow the base
-				// standard, passed indirectly.
-				if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
-					args[i] = lb_arg_type_direct(t, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
-				} else {
-					args[i] = lb_arg_type_indirect(t, nullptr);
-				}
+				args[i] = lb_arg_type_direct(t, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
 			} else {
+				// Non-HFA composites, or HFAs with >4 elements (not CPRCs),
+				// follow the base PCS: coerced to integer arrays.
 				i64 sz = lb_sizeof(t);
 				i64 a = lb_alignof(t);
 				if (is_calling_convention_odin(calling_convention) && sz > 8) {
