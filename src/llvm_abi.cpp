@@ -1554,14 +1554,15 @@ namespace lbAbiWasm {
 
 namespace lbAbiArm32 {
 	gb_internal Array<lbArgType> compute_arg_types(LLVMContextRef c, LLVMTypeRef *arg_types, unsigned arg_count, ProcCallingConvention calling_convention);
-	gb_internal lbArgType compute_return_type(LLVMContextRef c, LLVMTypeRef return_type, bool return_is_defined);
+	gb_internal LB_ABI_COMPUTE_RETURN_TYPE(compute_return_type);
+	gb_internal bool is_homogenous_aggregate(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_);
 
 	gb_internal LB_ABI_INFO(abi_info) {
 		LLVMContextRef c = m->ctx;		
 		lbFunctionType *ft = gb_alloc_item(permanent_allocator(), lbFunctionType);
 		ft->ctx = c;
 		ft->args = compute_arg_types(c, arg_types, arg_count, calling_convention);
-		ft->ret = compute_return_type(c, return_type, return_is_defined);
+		ft->ret = compute_return_type(ft, c, return_type, return_is_defined, return_is_tuple);
 		ft->calling_convention = calling_convention;
 		return ft;
 	}
@@ -1594,13 +1595,118 @@ namespace lbAbiArm32 {
 		return lb_arg_type_direct(type, nullptr, nullptr, attr);
 	}
 
+	// AAPCS32 Section 5.3.5: A Homogeneous Aggregate is a Composite Type
+	// where all of the Fundamental Data Types that compose the type are the
+	// same. The Base Type is the common Fundamental Data Type.
+	//
+	// For arrays, the base type is determined recursively from the element type.
+	gb_internal bool is_homogenous_array(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_) {
+		GB_ASSERT(lb_is_type_kind(type, LLVMArrayTypeKind));
+		unsigned len = LLVMGetArrayLength(type);
+		if (len == 0) {
+			return false;
+		}
+		LLVMTypeRef elem = OdinLLVMGetArrayElementType(type);
+		LLVMTypeRef base_type = nullptr;
+		unsigned member_count = 0;
+		if (is_homogenous_aggregate(c, elem, &base_type, &member_count)) {
+			if (base_type_) *base_type_ = base_type;
+			if (member_count_) *member_count_ = member_count * len;
+			return true;
+		}
+		return false;
+	}
+
+	// For structs, all fields must share the same base type, and the total
+	// size must equal base_type_size * member_count (i.e. no padding).
+	gb_internal bool is_homogenous_struct(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_) {
+		GB_ASSERT(lb_is_type_kind(type, LLVMStructTypeKind));
+		unsigned elem_count = LLVMCountStructElementTypes(type);
+		if (elem_count == 0) {
+			return false;
+		}
+		LLVMTypeRef base_type = nullptr;
+		unsigned member_count = 0;
+
+		for (unsigned i = 0; i < elem_count; i++) {
+			LLVMTypeRef field_type = nullptr;
+			unsigned field_member_count = 0;
+
+			LLVMTypeRef elem = LLVMStructGetTypeAtIndex(type, i);
+			if (!is_homogenous_aggregate(c, elem, &field_type, &field_member_count)) {
+				return false;
+			}
+
+			if (base_type == nullptr) {
+				base_type = field_type;
+				member_count = field_member_count;
+			} else {
+				if (base_type != field_type) {
+					return false;
+				}
+				member_count += field_member_count;
+			}
+		}
+
+		if (base_type == nullptr) {
+			return false;
+		}
+
+		if (lb_sizeof(type) == lb_sizeof(base_type) * member_count) {
+			if (base_type_) *base_type_ = base_type;
+			if (member_count_) *member_count_ = member_count;
+			return true;
+		}
+
+		return false;
+	}
+
+	// AAPCS32 Section 7.1.2 (VFP co-processor register candidates):
+	// Valid base types for homogeneous aggregates are single-precision and
+	// double-precision floating-point types (not half-precision).
+	gb_internal bool is_homogenous_aggregate(LLVMContextRef c, LLVMTypeRef type, LLVMTypeRef *base_type_, unsigned *member_count_) {
+		LLVMTypeKind kind = LLVMGetTypeKind(type);
+		switch (kind) {
+		case LLVMFloatTypeKind:
+		case LLVMDoubleTypeKind:
+			if (base_type_) *base_type_ = type;
+			if (member_count_) *member_count_ = 1;
+			return true;
+		case LLVMArrayTypeKind:
+			return is_homogenous_array(c, type, base_type_, member_count_);
+		case LLVMStructTypeKind:
+			return is_homogenous_struct(c, type, base_type_, member_count_);
+		}
+		return false;
+	}
+
+	// AAPCS32 Section 7.1.2: A Homogeneous Aggregate is a VFP CPRC only
+	// if it has one to four Elements.
+	gb_internal bool is_homogenous_aggregate_small_enough(LLVMTypeRef base_type, unsigned member_count) {
+		return (member_count <= 4);
+	}
+
 	gb_internal Array<lbArgType> compute_arg_types(LLVMContextRef c, LLVMTypeRef *arg_types, unsigned arg_count, ProcCallingConvention calling_convention) {
 		auto args = array_make<lbArgType>(lb_function_type_args_allocator(), arg_count);
 
 		for (unsigned i = 0; i < arg_count; i++) {
 			LLVMTypeRef t = arg_types[i];
+
+			LLVMTypeRef homo_base_type = {};
+			unsigned homo_member_count = 0;
+
 			if (is_register(t, false)) {
 				args[i] = non_struct(c, t, false);
+			} else if (is_homogenous_aggregate(c, t, &homo_base_type, &homo_member_count)) {
+				// AAPCS32 Section 7.1.2: HFAs with 1-4 elements are VFP CPRCs,
+				// passed in consecutive VFP registers (Rule C.1.vfp).
+				// HFAs with >4 elements are not CPRCs and follow the base
+				// standard, passed indirectly.
+				if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
+					args[i] = lb_arg_type_direct(t, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
+				} else {
+					args[i] = lb_arg_type_indirect(t, nullptr);
+				}
 			} else {
 				i64 sz = lb_sizeof(t);
 				i64 a = lb_alignof(t);
@@ -1619,19 +1725,39 @@ namespace lbAbiArm32 {
 		return args;
 	}
 
-	gb_internal lbArgType compute_return_type(LLVMContextRef c, LLVMTypeRef return_type, bool return_is_defined) {
+	// AAPCS32 Section 6.4 (base PCS) and Section 7.1.2 (VFP variant):
+	// - VFP CPRCs (HFAs with 1-4 elements) are returned in VFP registers.
+	// - Non-HFA composites <= 4 bytes are returned in r0.
+	// - All other composites are returned via memory (sret).
+	gb_internal LB_ABI_COMPUTE_RETURN_TYPE(compute_return_type) {
+		LLVMTypeRef homo_base_type = nullptr;
+		unsigned homo_member_count = 0;
+
 		if (!return_is_defined) {
 			return lb_arg_type_direct(LLVMVoidTypeInContext(c));
-		} else if (!is_register(return_type, true)) {
+		} else if (is_register(return_type, true)) {
+			return non_struct(c, return_type, true);
+		} else if (is_homogenous_aggregate(c, return_type, &homo_base_type, &homo_member_count)) {
+			if (is_homogenous_aggregate_small_enough(homo_base_type, homo_member_count)) {
+				return lb_arg_type_direct(return_type, llvm_array_type(homo_base_type, homo_member_count), nullptr, nullptr);
+			} else {
+				LB_ABI_MODIFY_RETURN_IF_TUPLE_MACRO();
+
+				LLVMAttributeRef attr = lb_create_enum_attribute_with_type(c, "sret", return_type);
+				return lb_arg_type_indirect(return_type, attr);
+			}
+		} else {
 			switch (lb_sizeof(return_type)) {
 			case 1:         return lb_arg_type_direct(LLVMIntTypeInContext(c, 8),  return_type, nullptr, nullptr);
 			case 2:         return lb_arg_type_direct(LLVMIntTypeInContext(c, 16), return_type, nullptr, nullptr);
 			case 3: case 4: return lb_arg_type_direct(LLVMIntTypeInContext(c, 32), return_type, nullptr, nullptr);
 			}
+
+			LB_ABI_MODIFY_RETURN_IF_TUPLE_MACRO();
+
 			LLVMAttributeRef attr = lb_create_enum_attribute_with_type(c, "sret", return_type);
 			return lb_arg_type_indirect(return_type, attr);
 		}
-		return non_struct(c, return_type, true);
 	}
 };
 
